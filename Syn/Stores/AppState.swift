@@ -3,9 +3,12 @@ import AppKit
 import AVFoundation
 import Carbon
 import SwiftUI
+import UserNotifications
 
 @MainActor
 final class AppState: ObservableObject {
+    /// Set briefly when a packet finishes so the recording HUD shows a celebratory "ready" flash.
+    @Published var completionFlash = false
     @Published var isCapturePickerPresented = false
     @Published var lastCaptureMode: CaptureMode?
     @Published var selectedPacketID: PacketSummary.ID?
@@ -186,6 +189,9 @@ final class AppState: ObservableObject {
             } else if ProcessInfo.processInfo.arguments.contains("--syn-show-processing-hud-fixture") {
                 showMainWindow()
                 showProcessingHUDFixture()
+            } else if ProcessInfo.processInfo.arguments.contains("--syn-show-completion-hud-fixture") {
+                showMainWindow()
+                showCompletionHUDFixture()
             } else if ProcessInfo.processInfo.arguments.contains("--syn-show-region-selector-fixture") {
                 showRegionSelectionFixture()
             } else if ProcessInfo.processInfo.arguments.contains("--syn-show-window-selector-fixture") {
@@ -256,6 +262,44 @@ final class AppState: ObservableObject {
         MainWindowController.shared.show(appState: self)
     }
 
+    /// Signal packet completion in-app instead of opening the packet folder: a happy chime, a
+    /// sparkle "ready" flash on the floating HUD, and a user notification when allowed.
+    func celebrateCompletion(packetTitle: String) {
+        NSSound(named: NSSound.Name("Glass"))?.play()
+
+        completionFlash = true
+        RecordingHUDController.shared.show(appState: self)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_200_000_000)
+            self.completionFlash = false
+            RecordingHUDController.shared.hide()
+        }
+
+        postCompletionNotification(packetTitle: packetTitle)
+    }
+
+    private func postCompletionNotification(packetTitle: String) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            func deliver() {
+                let content = UNMutableNotificationContent()
+                content.title = "Syn review packet ready"
+                content.body = "\(packetTitle): transcript and summary are done."
+                center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+            }
+            switch settings.authorizationStatus {
+            case .authorized, .provisional:
+                deliver()
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    if granted { deliver() }
+                }
+            default:
+                break
+            }
+        }
+    }
+
     func showSettingsWindow() {
         if settingsWindow == nil {
             let hostingController = NSHostingController(
@@ -307,6 +351,13 @@ final class AppState: ObservableObject {
         statusMessage = "Processing packet..."
         micLevel = 0
         isMicMeterActive = false
+        RecordingHUDController.shared.show(appState: self)
+    }
+
+    private func showCompletionHUDFixture() {
+        // Shows the "packet ready" sparkle flash without the auto-dismiss timer so it can be captured.
+        completionFlash = true
+        statusMessage = "Packet ready ✨"
         RecordingHUDController.shared.show(appState: self)
     }
 
@@ -1040,7 +1091,10 @@ final class AppState: ObservableObject {
             statusMessage = "Recording..."
             startDurationWarningMonitor()
             RecordingHUDController.shared.show(appState: self)
-            showMainWindow()
+            // Deliberately do NOT open the main window here: a plain Shift+Shift repeat-last
+            // capture should stay out of the way (only the floating HUD shows). Modes that need
+            // interaction surface their own UI — the capture picker (openCapturePicker shows the
+            // window) and the region/window selectors (their own overlays).
             scheduleSelectorRecordingFixtureStopIfNeeded()
             scheduleHotkeyRecordingFixtureStopIfNeeded()
         } catch {
@@ -1243,10 +1297,10 @@ final class AppState: ObservableObject {
             currentPermissionNotes = []
             stopDurationWarningMonitor()
             rememberSuccessfulCapture(mode: recording.mode)
-            statusMessage = "Packet ready. Folder revealed and copied; shareable zip is finishing in the background."
-            RecordingHUDController.shared.hide()
+            statusMessage = "Packet ready ✨ — handoff copied to clipboard; summary and zip are finishing in the background."
             AnnotationOverlayController.shared.close()
                 if hotkeyRecordingFixture?.process == true {
+                RecordingHUDController.shared.hide()
                 recordHotkeyRecording("trigger=\(hotkeyRecordingFixture?.trigger.rawValue ?? "")")
                 recordHotkeyRecording("mode=\(recording.mode.rawValue)")
                 recordHotkeyRecording("status=\(result.packet.status.rawValue)")
@@ -1260,6 +1314,7 @@ final class AppState: ObservableObject {
                 recordHotkeyRecording("zip=\(context.zipURL.path)")
                 terminateAfterFixtureCallback()
             } else if selectorRecordingFixtureMode != nil && shouldProcessSelectorRecordingFixture {
+                RecordingHUDController.shared.hide()
                 recordSelectorRecording("mode=\(recording.mode.rawValue)")
                 recordSelectorRecording("status=\(result.packet.status.rawValue)")
                 recordSelectorRecording("duration=\(String(format: "%.3f", result.packet.duration))")
@@ -1272,12 +1327,13 @@ final class AppState: ObservableObject {
                 recordSelectorRecording("zip=\(context.zipURL.path)")
                 terminateAfterFixtureCallback()
             } else {
-                SynPerf.log("TOTAL stop→packet-ready (folder revealed)", seconds: Date().timeIntervalSince(stopRequestedAt))
-                NSWorkspace.shared.activateFileViewerSelecting([context.folderURL])
-                // The packet folder and all core artifacts already exist; the layered summary and
-                // shareable zip finish off the critical path. Owned by the long-lived app (not a
-                // fire-and-forget task inside processing) so it isn't killed mid-flight; refreshes
-                // the UI when done so the "Reveal Zip" action appears.
+                SynPerf.log("TOTAL stop→packet-ready", seconds: Date().timeIntervalSince(stopRequestedAt))
+                // No Finder folder pop-up: signal completion in-app instead — a happy sound, a
+                // sparkle flash on the HUD, and a notification if the user has allowed them.
+                celebrateCompletion(packetTitle: result.packet.title)
+                // Core artifacts already exist; the layered summary + shareable zip finish off the
+                // critical path. Owned by the long-lived app so it isn't killed mid-flight, and
+                // refreshes the UI when done so the "Reveal Zip" action appears.
                 let deferredContext = context
                 let deferredCapture = capture
                 Task { [weak self] in

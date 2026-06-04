@@ -46,6 +46,8 @@ elif [[ "${SYN_UI_SHOW_HUD:-0}" == "1" ]]; then
   launch_args+=(--syn-show-main-window --syn-show-recording-hud-fixture)
 elif [[ "${SYN_UI_SHOW_PROCESSING_HUD:-0}" == "1" ]]; then
   launch_args+=(--syn-show-main-window --syn-show-processing-hud-fixture)
+elif [[ "${SYN_UI_SHOW_COMPLETION_HUD:-0}" == "1" ]]; then
+  launch_args+=(--syn-show-completion-hud-fixture)
 elif [[ "${SYN_UI_SHOW_REGION_SELECTOR:-0}" == "1" ]]; then
   launch_args+=(--syn-show-region-selector-fixture)
 elif [[ "${SYN_UI_SHOW_WINDOW_SELECTOR:-0}" == "1" ]]; then

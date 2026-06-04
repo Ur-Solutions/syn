@@ -6,6 +6,42 @@ struct RecordingHUDView: View {
     @State private var disarmTask: Task<Void, Never>?
 
     var body: some View {
+        Group {
+            if appState.completionFlash {
+                completionFlash
+            } else {
+                recordingControls
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: appState.completionFlash)
+    }
+
+    private var completionFlash: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.title2)
+                .foregroundStyle(.green)
+                .symbolEffect(.bounce, options: .repeat(2))
+            Image(systemName: "sparkles")
+                .font(.title3)
+                .foregroundStyle(.yellow)
+                .symbolEffect(.variableColor.iterative, options: .repeating)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Packet ready")
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                Text("Transcript & summary done")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .transition(.scale(scale: 0.85).combined(with: .opacity))
+    }
+
+    private var recordingControls: some View {
         HStack(spacing: 12) {
             Image(systemName: iconName)
                 .foregroundStyle(iconColor)
