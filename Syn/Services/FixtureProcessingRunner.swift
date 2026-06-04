@@ -1316,9 +1316,11 @@ enum FixtureProcessingRunner {
         appState.selectedPacketID = packet.id
         appState.copyPacketHandoff(for: packet)
 
-        let copied = NSPasteboard.general.string(forType: .string) == prompt
-            && PacketClipboard.copiedFolderURL?.standardizedFileURL == packetFolder.standardizedFileURL
-            && appState.statusMessage == "Agent prompt and packet folder copied."
+        let clipboardText = NSPasteboard.general.string(forType: .string) ?? ""
+        let copied = clipboardText == PacketClipboard.handoffText(folderURL: packetFolder)
+            && clipboardText.contains("summary.md")
+            && clipboardText.contains("agent-prompt.md")
+            && appState.statusMessage == "Review packet handoff copied to clipboard."
             && appState.commandPacket?.id == packet.id
             && appState.commandPacketZipURL == zipURL
             && packet.availableZipURL == zipURL

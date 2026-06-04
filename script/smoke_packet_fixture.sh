@@ -763,13 +763,16 @@ if errors:
     sys.exit(1)
 PY
 
-CLIPBOARD_PROMPT="$WORK_DIR/clipboard-prompt.md"
+CLIPBOARD_PROMPT="$WORK_DIR/clipboard-handoff.txt"
 /usr/bin/pbpaste > "$CLIPBOARD_PROMPT"
-if ! /usr/bin/cmp -s "$PACKET_DIR/agent-prompt.md" "$CLIPBOARD_PROMPT"; then
-  echo "clipboard does not contain agent-prompt.md after packet processing" >&2
-  exit 1
-fi
-PACKET_DIR="$PACKET_DIR" /usr/bin/swift -e 'import AppKit; import Foundation; let expected = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PACKET_DIR"]!).standardizedFileURL; guard let raw = NSPasteboard.general.string(forType: .fileURL), let actual = URL(string: raw)?.standardizedFileURL, actual == expected else { fputs("clipboard does not contain packet folder file URL after packet processing\n", stderr); exit(1) }'
+# The auto-copy is a concise, text-only handoff (not the full prompt, not a folder file URL):
+# it must reference the packet folder and direct the agent to summary.md + agent-prompt.md.
+for needle in "$PACKET_DIR" "summary.md" "agent-prompt.md" "progress.md"; do
+  if ! /usr/bin/grep -qF "$needle" "$CLIPBOARD_PROMPT"; then
+    echo "clipboard handoff is missing '$needle' after packet processing" >&2
+    exit 1
+  fi
+done
 
 PARTIAL_PACKET_LOG="$WORK_DIR/partial-packet-fixture.log"
 "$APP_BINARY" --syn-partial-packet-fixture "$FIXTURE_MP4" --output-root "$FIXTURE_ROOT" 2>&1 | tee "$PARTIAL_PACKET_LOG"

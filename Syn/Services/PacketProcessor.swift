@@ -935,7 +935,23 @@ final class PacketProcessor {
         return """
         # Syn Feedback Packet - \(profile.title)
 
-        You are receiving an implementation-agent feedback packet generated from a narrated screen recording. \(profile.openingInstruction)
+        Start with the Summary and Transcript below — they are the substance of this review. Packet locations, files, and capture/processing metadata follow further down. \(profile.openingInstruction)
+
+        ## Summary
+
+        \(summaryExcerpt)
+
+        ## Transcript Excerpt
+
+        Primary signal — prioritize what the user says. The spoken transcript is the authoritative record of what the user wants. Treat it as the primary intent and treat the summary, selected frames, and `recording.mp4` as corroborating evidence that confirms or locates what the user said.
+
+        \(transcriptExcerpt)
+
+        ## How To Use This Packet
+
+        \(workflowSteps)
+
+        \(profile.additionalSections)
 
         ## Packet Locations
 
@@ -953,18 +969,12 @@ final class PacketProcessor {
 
         \(promptProfiles)
 
-        ## How To Use This Packet
-
-        \(workflowSteps)
-
-        \(profile.additionalSections)
-
         ## Packet Files
 
         - `recording.mp4`: processed final recording with cursor/click overlays where available
         - `transcript.md`: local Whisper transcript
         - `summary.md`: coding-agent summary. May be generating in the background — check `progress.md`; it is replaced by richer tiers as they finish, so re-read it if `progress.md` is not yet complete
-        - `progress.md`: live finalize status (what is ready, summary tiers + speed/quality A/B table, zip status)
+        - `progress.md`: live finalize status (what is ready, summary tiers, zip status)
         - `summaries/`: per-tier summary outputs (fast / balanced / full)
         - `manifest.json`: capture, processing, frame, pointer, and retry metadata
         - `agent-prompts/`: alternate agent prompt profiles
@@ -1012,16 +1022,6 @@ final class PacketProcessor {
         ## Project Context
 
         \(projectContextExcerpt)
-
-        ## Transcript Excerpt
-
-        Primary signal — prioritize what the user says. The spoken transcript is the authoritative record of what the user wants. Treat it as the primary intent and treat the summary, selected frames, and `recording.mp4` as corroborating evidence that confirms or locates what the user said.
-
-        \(transcriptExcerpt)
-
-        ## Summary
-
-        \(summaryExcerpt)
         """
     }
 
@@ -1109,7 +1109,9 @@ final class PacketProcessor {
     }
 
     private func copyToClipboard(_ string: String, folderURL: URL) {
-        _ = PacketClipboard.copyPacket(prompt: string, folderURL: folderURL)
+        // The full prompt is written to agent-prompt.md; the clipboard gets the concise,
+        // text-only handoff that points the agent at the summary + agent prompt.
+        _ = PacketClipboard.copyHandoff(folderURL: folderURL)
     }
 
     private static func copyFinalRecording(rawURL: URL, finalURL: URL) throws {

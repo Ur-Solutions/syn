@@ -598,16 +598,10 @@ final class AppState: ObservableObject {
     }
 
     func copyPacketHandoff(for packet: PacketSummary) {
-        let promptURL = packet.folderURL.appendingPathComponent("agent-prompt.md")
-        guard let prompt = try? String(contentsOf: promptURL, encoding: .utf8) else {
-            lastErrorMessage = "Could not read agent-prompt.md."
-            return
-        }
-
-        if PacketClipboard.copyPacket(prompt: prompt, folderURL: packet.folderURL) {
-            statusMessage = "Agent prompt and packet folder copied."
+        if PacketClipboard.copyHandoff(folderURL: packet.folderURL) {
+            statusMessage = "Review packet handoff copied to clipboard."
         } else {
-            lastErrorMessage = "Could not copy packet to the clipboard."
+            lastErrorMessage = "Could not copy packet handoff to the clipboard."
         }
     }
 
