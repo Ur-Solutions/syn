@@ -25,10 +25,6 @@ final class PacketProcessor {
     private let aiProviderService = AIProviderService()
     var defaultPromptProfile: AgentPromptProfile = .generalCoding
     var projectContextFolderURL: URL?
-    /// When true, the deferred summary runs BOTH the GPT and Claude tier lineups and writes an
-    /// A/B speed+quality comparison. Defaults from the SYN_SUMMARY_AB env var; AppState may also
-    /// set it from a preference.
-    var abSummaryEnabled: Bool = (ProcessInfo.processInfo.environment["SYN_SUMMARY_AB"] == "1")
 
     func process(
         context: PacketContext,
@@ -81,15 +77,10 @@ final class PacketProcessor {
     }
 
     func progressiveLineups() -> [(name: String, tiers: [SummaryTier])] {
-        // Read the editable config every time so models / budgets / A/B can be swapped between
-        // captures without rebuilding or relaunching. Falls back to the built-in defaults.
+        // Read the editable config every time so models / budgets can be swapped between captures
+        // without rebuilding or relaunching. Falls back to the built-in default lineup.
         let config = SummaryConfigStore.load()
-        let gpt = config.tiers("gpt", fallback: SummaryLineups.gpt)
-        let claude = config.tiers("claude", fallback: SummaryLineups.claude)
-        if config.resolvedAB || abSummaryEnabled {
-            return [("gpt", gpt), ("claude", claude)]
-        }
-        return config.resolvedDefault == "gpt" ? [("gpt", gpt)] : [("claude", claude)]
+        return [("summary", config.tiers(fallback: SummaryLineups.default))]
     }
 
     static func summaryPlaceholderMarkdown() -> String {
@@ -144,7 +135,7 @@ final class PacketProcessor {
             for await (outcome, result) in group {
                 outcomes.append(outcome)
                 writeTierSummaryFile(context: context, outcome: outcome, markdown: result.markdown)
-                SynPerf.log("summary tier \(outcome.lineup)/\(outcome.tier.label) (\(outcome.tier.model))", seconds: outcome.seconds)
+                SynPerf.log("summary tier \(outcome.tier.label) (\(outcome.tier.model))", seconds: outcome.seconds)
 
                 if outcome.succeeded {
                     let rank = promotionRank(outcome)
@@ -182,7 +173,7 @@ final class PacketProcessor {
 
     /// Promotion priority: richer tier wins; on an A/B tie, prefer the default (claude) lineup.
     private func promotionRank(_ outcome: SummaryTierOutcome) -> Int {
-        outcome.tier.rank * 10 + (outcome.lineup == "claude" ? 1 : 0)
+        outcome.tier.rank
     }
 
     private func reloadSelectedFrames(context: PacketContext) -> [CandidateFrameMetadata] {
@@ -196,9 +187,9 @@ final class PacketProcessor {
     private func writeTierSummaryFile(context: PacketContext, outcome: SummaryTierOutcome, markdown: String) {
         let dir = context.folderURL.appendingPathComponent("summaries", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let header = "<!-- lineup=\(outcome.lineup) tier=\(outcome.tier.label) model=\(outcome.tier.model) maxTokens=\(outcome.tier.maxTokens) seconds=\(String(format: "%.2f", outcome.seconds)) provider=\(outcome.provider) -->\n\n"
+        let header = "<!-- tier=\(outcome.tier.label) model=\(outcome.tier.model) maxTokens=\(outcome.tier.maxTokens) seconds=\(String(format: "%.2f", outcome.seconds)) provider=\(outcome.provider) -->\n\n"
         try? (header + markdown).write(
-            to: dir.appendingPathComponent("\(outcome.lineup)-\(outcome.tier.label).md"),
+            to: dir.appendingPathComponent("\(outcome.tier.label).md"),
             atomically: true,
             encoding: .utf8
         )
@@ -231,15 +222,15 @@ final class PacketProcessor {
         let totalTiers = lineups.reduce(0) { $0 + $1.tiers.count }
         let doneTiers = outcomes.count
         let bestDone = outcomes.filter(\.succeeded).max(by: { promotionRank($0) < promotionRank($1) })
-        let bestLabel = bestDone.map { "\($0.lineup)/\($0.tier.label) (\($0.tier.model))" } ?? "none yet"
+        let bestLabel = bestDone.map { "\($0.tier.label) (\($0.tier.model))" } ?? "none yet"
 
-        var rows = "| lineup | tier | model | max tokens | status | seconds |\n|---|---|---|---|---|---|\n"
+        var rows = "| tier | model | max tokens | status | seconds |\n|---|---|---|---|---|\n"
         for lineup in lineups {
             for tier in lineup.tiers {
                 let outcome = outcomes.first { $0.lineup == lineup.name && $0.tier.label == tier.label }
                 let status = outcome.map { $0.succeeded ? "done" : "fallback" } ?? "pending"
                 let seconds = outcome.map { String(format: "%.2f", $0.seconds) } ?? "—"
-                rows += "| \(lineup.name) | \(tier.label) | \(tier.model) | \(tier.maxTokens) | \(status) | \(seconds) |\n"
+                rows += "| \(tier.label) | \(tier.model) | \(tier.maxTokens) | \(status) | \(seconds) |\n"
             }
         }
 
@@ -258,10 +249,10 @@ final class PacketProcessor {
         - Summary: \(summaryComplete ? "complete" : "\(doneTiers)/\(totalTiers) tiers done") — best so far: \(bestLabel)
         - Shareable zip: \(zipReady ? "ready" : "pending")
 
-        ## Summary tiers (speed + quality A/B)
+        ## Summary tiers
 
         \(rows)
-        Compare the per-tier files under `summaries/` to judge quality against the timings above.
+        Each tier's raw output is kept under `summaries/` (fast / balanced / full).
         """
         try? markdown.write(to: context.progressURL, atomically: true, encoding: .utf8)
     }
@@ -974,7 +965,7 @@ final class PacketProcessor {
         - `transcript.md`: local Whisper transcript
         - `summary.md`: coding-agent summary. May be generating in the background — check `progress.md`; it is replaced by richer tiers as they finish, so re-read it if `progress.md` is not yet complete
         - `progress.md`: live finalize status (what is ready, summary tiers + speed/quality A/B table, zip status)
-        - `summaries/`: per-tier summary outputs (fast/balanced/full, and both providers when A/B is on)
+        - `summaries/`: per-tier summary outputs (fast / balanced / full)
         - `manifest.json`: capture, processing, frame, pointer, and retry metadata
         - `agent-prompts/`: alternate agent prompt profiles
         - `project-context.md`: optional local project metadata snapshot when configured

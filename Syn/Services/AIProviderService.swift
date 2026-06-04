@@ -31,23 +31,19 @@ struct SummaryTier: Sendable {
 }
 
 enum SummaryLineups {
-    // gpt-5.5 has no nano/mini variants, so the fast/balanced rungs use the gpt-5.4 tiers.
-    static let gpt: [SummaryTier] = [
-        SummaryTier(label: "fast", provider: .openai, model: "gpt-5.4-nano", maxTokens: 300),
+    /// The progressive summary lineup: a fast first pass, a balanced pass, then the full pass.
+    /// Edit `~/Library/Application Support/Syn/summary.json` to change models / token budgets at
+    /// runtime — e.g. set the "full" tier model to `claude-sonnet-4-6` instead of
+    /// `claude-opus-4-8`. (gpt-5.5 has no nano/mini variants, so the small rungs use gpt-5.4.)
+    static let `default`: [SummaryTier] = [
+        SummaryTier(label: "fast", provider: .openai, model: "gpt-5.4-nano", maxTokens: 500),
         SummaryTier(label: "balanced", provider: .openai, model: "gpt-5.4-mini", maxTokens: 1000),
-        SummaryTier(label: "full", provider: .openai, model: "gpt-5.5", maxTokens: 5000)
-    ]
-    static let claude: [SummaryTier] = [
-        SummaryTier(label: "fast", provider: .anthropic, model: "claude-haiku-4-5", maxTokens: 300),
-        SummaryTier(label: "balanced", provider: .anthropic, model: "claude-sonnet-4-6", maxTokens: 1000),
         SummaryTier(label: "full", provider: .anthropic, model: "claude-opus-4-8", maxTokens: 5000)
     ]
-    /// Default progressive lineup used when A/B is off.
-    static let `default`: [SummaryTier] = claude
 }
 
 /// Editable lineup configuration. The app reads `~/Library/Application Support/Syn/summary.json`
-/// at the start of every deferred finalize, so models / token budgets / A/B can be swapped between
+/// at the start of every deferred finalize, so models / token budgets can be swapped between
 /// captures without rebuilding or relaunching. A documented template is written on first use.
 struct SummaryConfig: Codable {
     struct Tier: Codable {
@@ -56,15 +52,10 @@ struct SummaryConfig: Codable {
         var model: String
         var maxTokens: Int
     }
-    var ab: Bool?
-    var `default`: String?     // "claude" | "gpt"
-    var lineups: [String: [Tier]]?
+    var lineup: [Tier]?
 
-    var resolvedAB: Bool { ab ?? false }
-    var resolvedDefault: String { (`default` ?? "claude").lowercased() }
-
-    func tiers(_ name: String, fallback: [SummaryTier]) -> [SummaryTier] {
-        guard let raw = lineups?[name], !raw.isEmpty else { return fallback }
+    func tiers(fallback: [SummaryTier]) -> [SummaryTier] {
+        guard let raw = lineup, !raw.isEmpty else { return fallback }
         return raw.map {
             SummaryTier(
                 label: $0.label,
@@ -82,13 +73,13 @@ enum SummaryConfigStore {
             .appendingPathComponent("Library/Application Support/Syn/summary.json")
     }
 
-    /// Load the lineup config, writing a template populated with the built-in defaults on first
+    /// Load the lineup config, writing a template populated with the built-in default on first
     /// use. Re-read per capture so edits take effect on the next recording.
     static func load() -> SummaryConfig {
         ensureTemplate()
         guard let data = try? Data(contentsOf: fileURL),
               let config = try? JSONDecoder().decode(SummaryConfig.self, from: data) else {
-            return SummaryConfig(ab: false, default: "claude", lineups: nil)
+            return SummaryConfig(lineup: nil)
         }
         return config
     }
@@ -98,16 +89,10 @@ enum SummaryConfigStore {
         try? FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
-        func tierDicts(_ tiers: [SummaryTier]) -> [[String: Any]] {
-            tiers.map { ["label": $0.label, "provider": $0.provider.rawValue, "model": $0.model, "maxTokens": $0.maxTokens] }
-        }
         let template: [String: Any] = [
-            "ab": false,
-            "default": "claude",
-            "lineups": [
-                "claude": tierDicts(SummaryLineups.claude),
-                "gpt": tierDicts(SummaryLineups.gpt)
-            ]
+            "lineup": SummaryLineups.default.map {
+                ["label": $0.label, "provider": $0.provider.rawValue, "model": $0.model, "maxTokens": $0.maxTokens]
+            }
         ]
         if let data = try? JSONSerialization.data(withJSONObject: template, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: fileURL)
