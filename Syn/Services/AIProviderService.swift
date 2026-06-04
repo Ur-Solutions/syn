@@ -313,6 +313,9 @@ final class AIProviderService {
         let body: [String: Any] = [
             "model": model,
             "input": [["role": "user", "content": content]],
+            // Low reasoning keeps the small fast/balanced tiers fast and leaves their token budget
+            // for the summary itself (reasoning tokens otherwise count against max_output_tokens).
+            "reasoning": ["effort": "low"],
             "max_output_tokens": maxTokens
         ]
 
