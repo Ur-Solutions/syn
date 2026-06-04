@@ -52,6 +52,7 @@ enum FixtureProcessingRunner {
     static let permissionStatusArgumentName = "--syn-permission-status-fixture"
     static let frameDebugArgumentName = "--syn-frame-debug-fixture"
     static let ocrArgumentName = "--syn-ocr-fixture"
+    static let deferredSummaryArgumentName = "--syn-deferred-summary-fixture"
 
     static var isRequested: Bool {
         ProcessInfo.processInfo.arguments.contains(argumentName)
@@ -82,6 +83,7 @@ enum FixtureProcessingRunner {
             || ProcessInfo.processInfo.arguments.contains(permissionStatusArgumentName)
             || ProcessInfo.processInfo.arguments.contains(frameDebugArgumentName)
             || ProcessInfo.processInfo.arguments.contains(ocrArgumentName)
+            || ProcessInfo.processInfo.arguments.contains(deferredSummaryArgumentName)
     }
 
     @MainActor
@@ -192,6 +194,14 @@ enum FixtureProcessingRunner {
                 print("SYN_OCR_TEXT=\(result.text.replacingOccurrences(of: "\n", with: " / "))")
                 print("SYN_OCR_PACKET=\(result.packetURL.path)")
                 return result.passed ? 0 : 1
+            } else if ProcessInfo.processInfo.arguments.contains(deferredSummaryArgumentName) {
+                let result = try await runDeferredSummaryFixture(arguments: ProcessInfo.processInfo.arguments)
+                print("SYN_DEFERRED_SUMMARY_PACKET=\(result.packetURL.path)")
+                print("SYN_DEFERRED_SUMMARY_TIER_FILES=\(result.summaryCount)")
+                print("SYN_DEFERRED_SUMMARY_BEGIN_PROGRESS")
+                print(result.progress)
+                print("SYN_DEFERRED_SUMMARY_END_PROGRESS")
+                return result.summaryCount > 0 ? 0 : 1
             } else if ProcessInfo.processInfo.arguments.contains(pausedPacketArgumentName) {
                 let packet = try await runPausedPacketFixture(arguments: ProcessInfo.processInfo.arguments)
                 print("SYN_PAUSED_FIXTURE_PACKET=\(packet.folderURL.path)")
@@ -1540,6 +1550,40 @@ enum FixtureProcessingRunner {
         )
     }
 
+    /// Runs the deferred layered summary against an EXISTING packet folder (which already has
+    /// transcript.md, selected frames, and manifest.json), so the deferred path + the A/B lineups
+    /// can be exercised on demand without a screen recording. Honors the editable summary config
+    /// (`~/Library/Application Support/Syn/summary.json`).
+    @MainActor
+    private static func runDeferredSummaryFixture(arguments: [String]) async -> (packetURL: URL, summaryCount: Int, progress: String) {
+        guard let index = arguments.firstIndex(of: deferredSummaryArgumentName),
+              index + 1 < arguments.count else {
+            return (URL(fileURLWithPath: "/"), 0, "missing packet folder argument")
+        }
+        let folderURL = URL(fileURLWithPath: arguments[index + 1])
+        let context = PacketContext(
+            id: UUID(),
+            title: folderURL.lastPathComponent,
+            createdAt: Date(),
+            folderURL: folderURL,
+            zipURL: PacketLayout.zipURL(for: folderURL)
+        )
+        let capture = CaptureSourceMetadata(
+            mode: CaptureMode.screen.rawValue,
+            displayID: nil, windowID: nil, appName: nil, windowTitle: nil,
+            sourceRect: nil, outputSize: nil,
+            notes: ["Deferred summary fixture."]
+        )
+        await PacketProcessor().runDeferredFinalize(context: context, capture: capture)
+
+        let summaryDir = folderURL.appendingPathComponent("summaries", isDirectory: true)
+        let summaryCount = ((try? FileManager.default.contentsOfDirectory(at: summaryDir, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension.lowercased() == "md" }
+            .count
+        let progress = (try? String(contentsOf: context.progressURL, encoding: .utf8)) ?? "(no progress.md written)"
+        return (folderURL, summaryCount, progress)
+    }
+
     private static func makeOCRFixtureImage(text: String) -> CGImage? {
         let size = CGSize(width: 960, height: 360)
         let image = NSImage(size: size)
@@ -2214,7 +2258,7 @@ enum FixtureProcessingRunner {
             frames: frames,
             context: context
         )
-        guard body["model"] as? String == "claude-opus-4-8",
+        guard body["model"] as? String == "claude-sonnet-4-6",
               let messages = body["messages"] as? [[String: Any]],
               messages.count == 1,
               messages[0]["role"] as? String == "user",

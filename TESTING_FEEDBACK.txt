@@ -1,0 +1,17 @@
+# Syn testing feedback
+
+- Transcript is not working. Most important!!
+- Transcript should be more important than visuals. The LLM deductions must emphasize what I say.
+- We need a trash button in the HUD, that is a click once -> icon turns red -> click twice to confirm
+- Window select mode
+    - Windows overlays are incorrectly placed
+    - Pressing "enter" or "escape" at any point in this mode just causes the "wrong key" mac os sound and nothing happens.
+- Performance is way way way too low.
+    - Processing a video takes tens of seconds if not minutes.
+    - Target speed is below 10 seconds.
+    - Recordings under a minute should take only a few seconds to process.
+    - Doing async processing while the video is recording is recommended.
+    - Multiple API calls LLM (with caching) are acceptable.
+    - It might be OK for us to do the zip step async (and show this) but show the folder for the user when this is ready.
+-
+

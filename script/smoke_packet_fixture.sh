@@ -508,7 +508,7 @@ if processing.get("frameSelectionModel") != "gpt-5-mini":
     errors.append(f"manifest frame selection model is wrong: {processing.get('frameSelectionModel')}")
 if processing.get("summaryProvider") != "anthropic":
     errors.append(f"manifest did not use Anthropic summary: {processing.get('summaryProvider')}")
-if processing.get("summaryModel") != "claude-opus-4-8":
+if processing.get("summaryModel") != "claude-sonnet-4-6":
     errors.append(f"manifest summary model is wrong: {processing.get('summaryModel')}")
 stage_timings = processing.get("stageTimings") or []
 expected_stage_names = {

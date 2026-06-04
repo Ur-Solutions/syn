@@ -9,6 +9,8 @@ final class WindowSelectionController {
     private var completion: ((CGWindowID?) -> Void)?
     private var candidates: [WindowSelectionCandidate] = []
     private var fixtureSelectedWindowID: CGWindowID?
+    private var currentSelectedID: CGWindowID?
+    private var keyMonitor: Any?
 
     private init() {}
 
@@ -18,18 +20,24 @@ final class WindowSelectionController {
         candidates = eligibleWindowCandidates()
         let initialSelectedID = preselectFirstCandidate ? candidates.first?.id : nil
         fixtureSelectedWindowID = initialSelectedID
+        currentSelectedID = initialSelectedID
 
         for screen in NSScreen.screens {
             let view = WindowSelectionOverlayView(
                 screen: screen,
                 candidates: candidates,
-                initialSelectedID: initialSelectedID
-            ) { [weak self] windowID in
-                self?.finish(windowID)
-            } onCancel: { [weak self] in
-                self?.finish(nil)
-            }
-            let window = NSWindow(
+                initialSelectedID: initialSelectedID,
+                onConfirm: { [weak self] windowID in
+                    self?.finish(windowID)
+                },
+                onCancel: { [weak self] in
+                    self?.finish(nil)
+                },
+                onSelect: { [weak self] windowID in
+                    self?.currentSelectedID = windowID
+                }
+            )
+            let window = WindowSelectionPanelWindow(
                 contentRect: screen.frame,
                 styleMask: [.borderless],
                 backing: .buffered,
@@ -44,20 +52,56 @@ final class WindowSelectionController {
             window.level = .screenSaver
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             window.acceptsMouseMovedEvents = true
-            window.makeFirstResponder(view)
             window.orderFrontRegardless()
+            window.makeKey()
+            window.makeFirstResponder(view)
             windows.append(window)
         }
 
         NSApp.activate(ignoringOtherApps: true)
+        installKeyMonitor()
     }
 
     func cancel() {
+        removeKeyMonitor()
         windows.forEach { $0.orderOut(nil) }
         windows = []
         candidates = []
         completion = nil
         fixtureSelectedWindowID = nil
+        currentSelectedID = nil
+    }
+
+    private func installKeyMonitor() {
+        removeKeyMonitor()
+        // A local key monitor handles Enter/Escape regardless of which display's
+        // overlay window is key (only one borderless window can be key at a time),
+        // using the controller-level selection so confirm works on any screen.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else {
+                return event
+            }
+            switch event.keyCode {
+            case 53: // Escape
+                self.finish(nil)
+                return nil
+            case 36, 76: // Return / keypad Enter
+                if let id = self.currentSelectedID {
+                    self.finish(id)
+                    return nil
+                }
+                return event
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+        keyMonitor = nil
     }
 
     func confirmFixtureSelection() {
@@ -66,20 +110,21 @@ final class WindowSelectionController {
 
     func driveFixtureClickAndConfirm() {
         guard let candidate = candidates.first,
-              let window = windows.first(where: { candidate.rect.intersects($0.frame) }),
-              let view = window.contentView as? WindowSelectionOverlayView else {
+              let view = windows.first?.contentView as? WindowSelectionOverlayView else {
             return
         }
         view.performFixtureClickAndConfirm(candidateRect: candidate.rect)
     }
 
     private func finish(_ windowID: CGWindowID?) {
+        removeKeyMonitor()
         let handler = completion
         windows.forEach { $0.orderOut(nil) }
         windows = []
         candidates = []
         completion = nil
         fixtureSelectedWindowID = nil
+        currentSelectedID = nil
         handler?(windowID)
     }
 
@@ -135,11 +180,17 @@ private struct WindowSelectionCandidate {
     var title: String?
 }
 
+private final class WindowSelectionPanelWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 private final class WindowSelectionOverlayView: NSView {
     private let screen: NSScreen
     private let candidates: [WindowSelectionCandidate]
     private let onConfirm: (CGWindowID) -> Void
     private let onCancel: () -> Void
+    private let onSelect: (CGWindowID) -> Void
     private var hoveredID: CGWindowID?
     private var selectedID: CGWindowID?
 
@@ -148,13 +199,15 @@ private final class WindowSelectionOverlayView: NSView {
         candidates: [WindowSelectionCandidate],
         initialSelectedID: CGWindowID?,
         onConfirm: @escaping (CGWindowID) -> Void,
-        onCancel: @escaping () -> Void
+        onCancel: @escaping () -> Void,
+        onSelect: @escaping (CGWindowID) -> Void
     ) {
         self.screen = screen
         self.candidates = candidates
         self.selectedID = initialSelectedID
         self.onConfirm = onConfirm
         self.onCancel = onCancel
+        self.onSelect = onSelect
         super.init(frame: screen.frame)
         wantsLayer = true
     }
@@ -210,14 +263,12 @@ private final class WindowSelectionOverlayView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         let localPoint = convert(event.locationInWindow, from: nil)
-        let globalPoint = CGPoint(x: screen.frame.minX + localPoint.x, y: screen.frame.minY + localPoint.y)
-        hoveredID = candidate(at: globalPoint)?.id
+        hoveredID = candidate(atLocalPoint: localPoint)?.id
         needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
         let localPoint = convert(event.locationInWindow, from: nil)
-        let globalPoint = CGPoint(x: screen.frame.minX + localPoint.x, y: screen.frame.minY + localPoint.y)
 
         if let selected = selectedCandidate(),
            let localRect = localRect(for: selected.rect) {
@@ -232,8 +283,9 @@ private final class WindowSelectionOverlayView: NSView {
             }
         }
 
-        if let candidate = candidate(at: globalPoint) {
+        if let candidate = candidate(atLocalPoint: localPoint) {
             selectedID = candidate.id
+            onSelect(candidate.id)
             needsDisplay = true
         }
     }
@@ -247,8 +299,13 @@ private final class WindowSelectionOverlayView: NSView {
         }
     }
 
-    private func candidate(at globalPoint: CGPoint) -> WindowSelectionCandidate? {
-        candidates.first { $0.rect.contains(globalPoint) }
+    private func candidate(atLocalPoint localPoint: CGPoint) -> WindowSelectionCandidate? {
+        candidates.first { candidate in
+            guard let rect = localRect(for: candidate.rect) else {
+                return false
+            }
+            return rect.contains(localPoint)
+        }
     }
 
     private func selectedCandidate() -> WindowSelectionCandidate? {
@@ -259,9 +316,17 @@ private final class WindowSelectionOverlayView: NSView {
     }
 
     private func localRect(for globalRect: CGRect) -> CGRect? {
-        CGRect(
+        // candidate.rect comes from CGWindowListCopyWindowInfo in Quartz coordinates:
+        // top-left origin, Y grows DOWN, global across the display arrangement.
+        // This view is a Cocoa NSView (bottom-left origin, Y grows UP) whose local space
+        // is offset by the screen's Cocoa frame. Flip Y against the primary display height,
+        // then subtract this screen's Cocoa origin to land in view-local space.
+        let primaryHeight = (NSScreen.screens.first(where: { $0.frame.origin == .zero })
+            ?? NSScreen.screens.first)?.frame.height ?? screen.frame.height
+        let cocoaGlobalY = primaryHeight - globalRect.maxY
+        return CGRect(
             x: globalRect.minX - screen.frame.minX,
-            y: globalRect.minY - screen.frame.minY,
+            y: cocoaGlobalY - screen.frame.minY,
             width: globalRect.width,
             height: globalRect.height
         )
@@ -325,11 +390,10 @@ private final class WindowSelectionOverlayView: NSView {
     }
 
     func performFixtureClickAndConfirm(candidateRect: CGRect) {
-        let globalPoint = CGPoint(x: candidateRect.midX, y: candidateRect.midY)
-        let localPoint = CGPoint(
-            x: globalPoint.x - screen.frame.minX,
-            y: globalPoint.y - screen.frame.minY
-        )
+        guard let localRect = localRect(for: candidateRect) else {
+            return
+        }
+        let localPoint = CGPoint(x: localRect.midX, y: localRect.midY)
         if let event = mouseEvent(type: .mouseMoved, point: localPoint) {
             mouseMoved(with: event)
         }

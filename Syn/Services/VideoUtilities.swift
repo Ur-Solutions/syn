@@ -280,6 +280,41 @@ enum VideoUtilities {
             height: evenCeil(presentationSize.height + padding * 2)
         )
 
+        // Fast-path: when there is no dynamic crop, no padding, and nothing to draw
+        // (no click bubbles, no annotations), the processed recording is identical to the
+        // raw capture. Copy it instead of re-encoding the whole video through
+        // AVAssetExportSession + Core Animation, which is the dominant processing cost.
+        let hasClicks = pointerEvents.contains { $0.kind.isMouseDown }
+        let hasAnnotations = !annotations.isEmpty
+        if dynamicCropPlan == nil, padding == 0, !hasClicks, !hasAnnotations {
+            try FileManager.default.copyItem(at: rawURL, to: finalURL)
+            let mapped = mapPointerEvents(
+                pointerEvents,
+                capture: capture,
+                presentationSize: presentationSize,
+                renderSize: renderSize,
+                padding: 0,
+                activeWindowPlan: nil
+            )
+            let mappedAnnotations = mapAnnotationStrokes(
+                annotations,
+                capture: capture,
+                presentationSize: presentationSize,
+                renderSize: renderSize,
+                padding: 0,
+                activeWindowPlan: nil
+            )
+            return ProcessedVideoResult(
+                duration: duration.seconds,
+                renderSize: CodableSize(renderSize),
+                pointerEvents: mapped.events,
+                renderedClickCount: 0,
+                annotations: mappedAnnotations.strokes,
+                renderedAnnotationCount: 0,
+                notes: ["No overlays, crop, or padding required; copied raw recording without re-encoding."]
+            )
+        }
+
         let composition = AVMutableComposition()
         guard let compositionVideoTrack = composition.addMutableTrack(
             withMediaType: .video,
@@ -503,6 +538,12 @@ enum VideoUtilities {
             annotationCount += 1
         }
 
+        // Only attach the Core Animation tool when there is something to draw. It forces
+        // the entire export to be composited frame-by-frame through Core Animation (the
+        // slowest AVFoundation export path), so crop-only renders skip it.
+        guard clickCount > 0 || annotationCount > 0 else {
+            return (0, 0)
+        }
         videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
             postProcessingAsVideoLayer: videoLayer,
             in: parentLayer

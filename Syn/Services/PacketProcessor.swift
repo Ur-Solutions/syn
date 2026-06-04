@@ -25,6 +25,10 @@ final class PacketProcessor {
     private let aiProviderService = AIProviderService()
     var defaultPromptProfile: AgentPromptProfile = .generalCoding
     var projectContextFolderURL: URL?
+    /// When true, the deferred summary runs BOTH the GPT and Claude tier lineups and writes an
+    /// A/B speed+quality comparison. Defaults from the SYN_SUMMARY_AB env var; AppState may also
+    /// set it from a preference.
+    var abSummaryEnabled: Bool = (ProcessInfo.processInfo.environment["SYN_SUMMARY_AB"] == "1")
 
     func process(
         context: PacketContext,
@@ -33,7 +37,8 @@ final class PacketProcessor {
         pointerEvents: [PointerEvent],
         annotations: [AnnotationStroke],
         activeWindowSamples: [ActiveWindowSample],
-        pauses: [PauseInterval]
+        pauses: [PauseInterval],
+        deferFinalize: Bool = false
     ) async throws -> PacketProcessingResult {
         var stageTimings: [ProcessingStageTiming] = []
 
@@ -60,8 +65,205 @@ final class PacketProcessor {
             activeWindowSamples: activeWindowSamples,
             pauses: pauses,
             duration: duration,
-            initialStageTimings: stageTimings
+            initialStageTimings: stageTimings,
+            deferFinalize: deferFinalize
         )
+    }
+
+    // MARK: - Deferred layered summary
+
+    struct SummaryTierOutcome {
+        let lineup: String
+        let tier: SummaryTier
+        let provider: String
+        let seconds: Double
+        let succeeded: Bool
+    }
+
+    func progressiveLineups() -> [(name: String, tiers: [SummaryTier])] {
+        // Read the editable config every time so models / budgets / A/B can be swapped between
+        // captures without rebuilding or relaunching. Falls back to the built-in defaults.
+        let config = SummaryConfigStore.load()
+        let gpt = config.tiers("gpt", fallback: SummaryLineups.gpt)
+        let claude = config.tiers("claude", fallback: SummaryLineups.claude)
+        if config.resolvedAB || abSummaryEnabled {
+            return [("gpt", gpt), ("claude", claude)]
+        }
+        return config.resolvedDefault == "gpt" ? [("gpt", gpt)] : [("claude", claude)]
+    }
+
+    static func summaryPlaceholderMarkdown() -> String {
+        """
+        # Summary
+
+        _The layered summary is generating in the background. This file is replaced as each tier
+        finishes (fast → balanced → full). See `progress.md` for live status. The transcript,
+        recording, and selected frames are already available._
+        """
+    }
+
+    /// Runs the layered summary lineup(s) after the packet folder has been revealed: tiers run
+    /// concurrently, `summary.md` is promoted as each richer tier lands, per-tier outputs are
+    /// written under `summaries/`, `progress.md` is kept live, and finally the shareable zip is
+    /// created. Owned by the long-lived app so it is not killed mid-flight.
+    func runDeferredFinalize(context: PacketContext, capture: CaptureSourceMetadata) async {
+        let transcript = (try? String(contentsOf: context.transcriptURL, encoding: .utf8)) ?? ""
+        let frames = reloadSelectedFrames(context: context)
+        let lineups = progressiveLineups()
+
+        // Resolve each provider's key ONCE up front. Reading the Anthropic key spawns a `hem`
+        // subprocess that races under concurrency, so reading it per-tier would make most of the
+        // concurrent Claude tiers fail; resolving once and passing the value in avoids that.
+        let anthropicKey = SecretStore.readAnthropicKey()
+        let openAIKey = SecretStore.readOpenAIKey()
+
+        var outcomes: [SummaryTierOutcome] = []
+        var bestRank = -1
+
+        await withTaskGroup(of: (SummaryTierOutcome, SummaryResult).self) { group in
+            for lineup in lineups {
+                for tier in lineup.tiers {
+                    group.addTask {
+                        let started = Date()
+                        let result = await self.aiProviderService.generateSummary(
+                            tier: tier, transcript: transcript, frames: frames, context: context,
+                            anthropicKey: anthropicKey, openAIKey: openAIKey
+                        )
+                        let outcome = SummaryTierOutcome(
+                            lineup: lineup.name,
+                            tier: tier,
+                            provider: result.provider,
+                            seconds: Date().timeIntervalSince(started),
+                            succeeded: result.provider != "local-fallback"
+                        )
+                        return (outcome, result)
+                    }
+                }
+            }
+
+            for await (outcome, result) in group {
+                outcomes.append(outcome)
+                writeTierSummaryFile(context: context, outcome: outcome, markdown: result.markdown)
+                SynPerf.log("summary tier \(outcome.lineup)/\(outcome.tier.label) (\(outcome.tier.model))", seconds: outcome.seconds)
+
+                if outcome.succeeded {
+                    let rank = promotionRank(outcome)
+                    if rank > bestRank {
+                        bestRank = rank
+                        try? result.markdown.write(to: context.summaryURL, atomically: true, encoding: .utf8)
+                        refreshHandoff(context: context, best: outcome)
+                    }
+                }
+                writeProgressFile(context: context, lineups: lineups, outcomes: outcomes, zipReady: false, summaryComplete: false)
+            }
+        }
+
+        // If no tier succeeded, leave a local fallback summary rather than the placeholder.
+        if bestRank < 0 {
+            try? AIProviderService.fallbackSummary(transcript: transcript, frames: frames)
+                .write(to: context.summaryURL, atomically: true, encoding: .utf8)
+            refreshHandoff(context: context, best: nil)
+        }
+
+        // All summary tiers done; create the shareable zip now that the best summary is in place.
+        let zipStart = Date()
+        try? ZipService.createZip(for: context)
+        SynPerf.log("background zip (after summary)", seconds: Date().timeIntervalSince(zipStart))
+
+        if let data = try? Data(contentsOf: context.manifestURL),
+           var manifest = try? JSONDecoder.synDecoder.decode(PacketManifest.self, from: data) {
+            manifest.processing.zipStatus = "ready"
+            manifest.processing.summaryStatus = bestRank < 0 ? "local-fallback" : "ready"
+            try? JSONEncoder.synEncoder.encode(manifest).write(to: context.manifestURL)
+        }
+        writeProgressFile(context: context, lineups: lineups, outcomes: outcomes, zipReady: true, summaryComplete: true)
+        SynPerf.event("deferred finalize complete: \(outcomes.count) tiers, \(outcomes.filter(\.succeeded).count) succeeded")
+    }
+
+    /// Promotion priority: richer tier wins; on an A/B tie, prefer the default (claude) lineup.
+    private func promotionRank(_ outcome: SummaryTierOutcome) -> Int {
+        outcome.tier.rank * 10 + (outcome.lineup == "claude" ? 1 : 0)
+    }
+
+    private func reloadSelectedFrames(context: PacketContext) -> [CandidateFrameMetadata] {
+        guard let data = try? Data(contentsOf: context.candidateMetadataURL),
+              let frames = try? JSONDecoder.synDecoder.decode([CandidateFrameMetadata].self, from: data) else {
+            return []
+        }
+        return frames.filter(\.selected)
+    }
+
+    private func writeTierSummaryFile(context: PacketContext, outcome: SummaryTierOutcome, markdown: String) {
+        let dir = context.folderURL.appendingPathComponent("summaries", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let header = "<!-- lineup=\(outcome.lineup) tier=\(outcome.tier.label) model=\(outcome.tier.model) maxTokens=\(outcome.tier.maxTokens) seconds=\(String(format: "%.2f", outcome.seconds)) provider=\(outcome.provider) -->\n\n"
+        try? (header + markdown).write(
+            to: dir.appendingPathComponent("\(outcome.lineup)-\(outcome.tier.label).md"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    /// Re-point the manifest's summary provider/model at the current best tier and rewrite the
+    /// agent prompts (which re-embed the now-promoted summary.md) + clipboard handoff.
+    private func refreshHandoff(context: PacketContext, best: SummaryTierOutcome?) {
+        guard let data = try? Data(contentsOf: context.manifestURL),
+              var manifest = try? JSONDecoder.synDecoder.decode(PacketManifest.self, from: data) else {
+            return
+        }
+        if let best {
+            manifest.processing.summaryProvider = best.provider
+            manifest.processing.summaryModel = best.tier.model
+        }
+        try? JSONEncoder.synEncoder.encode(manifest).write(to: context.manifestURL)
+        if let prompt = try? writeAgentPrompts(context: context, manifest: manifest) {
+            copyToClipboard(prompt, folderURL: context.folderURL)
+        }
+    }
+
+    func writeProgressFile(
+        context: PacketContext,
+        lineups: [(name: String, tiers: [SummaryTier])],
+        outcomes: [SummaryTierOutcome],
+        zipReady: Bool,
+        summaryComplete: Bool
+    ) {
+        let totalTiers = lineups.reduce(0) { $0 + $1.tiers.count }
+        let doneTiers = outcomes.count
+        let bestDone = outcomes.filter(\.succeeded).max(by: { promotionRank($0) < promotionRank($1) })
+        let bestLabel = bestDone.map { "\($0.lineup)/\($0.tier.label) (\($0.tier.model))" } ?? "none yet"
+
+        var rows = "| lineup | tier | model | max tokens | status | seconds |\n|---|---|---|---|---|---|\n"
+        for lineup in lineups {
+            for tier in lineup.tiers {
+                let outcome = outcomes.first { $0.lineup == lineup.name && $0.tier.label == tier.label }
+                let status = outcome.map { $0.succeeded ? "done" : "fallback" } ?? "pending"
+                let seconds = outcome.map { String(format: "%.2f", $0.seconds) } ?? "—"
+                rows += "| \(lineup.name) | \(tier.label) | \(tier.model) | \(tier.maxTokens) | \(status) | \(seconds) |\n"
+            }
+        }
+
+        let markdown = """
+        # Packet Progress
+
+        Status: \(summaryComplete ? "complete" : "generating summary…")
+
+        The recording, transcript (`transcript.md`), selected frames, and `manifest.json` are ready.
+        The summary is produced in layered tiers; richer tiers replace earlier ones in `summary.md`
+        as they finish, and each tier's raw output is kept under `summaries/`.
+
+        ## Stages
+
+        - Recording / transcript / frames / manifest: ready
+        - Summary: \(summaryComplete ? "complete" : "\(doneTiers)/\(totalTiers) tiers done") — best so far: \(bestLabel)
+        - Shareable zip: \(zipReady ? "ready" : "pending")
+
+        ## Summary tiers (speed + quality A/B)
+
+        \(rows)
+        Compare the per-tier files under `summaries/` to judge quality against the timings above.
+        """
+        try? markdown.write(to: context.progressURL, atomically: true, encoding: .utf8)
     }
 
     func retry(context: PacketContext) async throws -> PacketProcessingResult {
@@ -227,101 +429,88 @@ final class PacketProcessor {
         activeWindowSamples: [ActiveWindowSample],
         pauses: [PauseInterval],
         duration: TimeInterval,
-        initialStageTimings: [ProcessingStageTiming] = []
+        initialStageTimings: [ProcessingStageTiming] = [],
+        deferFinalize: Bool = false
     ) async throws -> PacketProcessingResult {
         var processingNotes: [String] = []
         var stageTimings = initialStageTimings
+        let pipelineStart = Date()
         let prepareStart = Date()
         try prepareDerivedOutputs(context: context)
         try writeProjectContextIfConfigured(context: context, notes: &processingNotes)
         stageTimings.append(processingTiming("prepare-derived-outputs-and-project-context", startedAt: prepareStart))
 
-        let processedVideo: ProcessedVideoResult
-        let renderStart = Date()
-        do {
-            processedVideo = try await VideoUtilities.renderProcessedRecording(
-                rawURL: context.rawRecordingURL,
-                finalURL: context.finalRecordingURL,
-                capture: capture,
-                pointerEvents: pointerEvents,
-                annotations: annotations,
-                activeWindowSamples: activeWindowSamples
-            )
-            processingNotes.append(contentsOf: processedVideo.notes)
-            if processedVideo.renderedClickCount > 0 {
-                processingNotes.append("Rendered \(processedVideo.renderedClickCount) click bubble overlays into recording.mp4.")
-            }
-            if processedVideo.renderedAnnotationCount > 0 {
-                processingNotes.append("Rendered \(processedVideo.renderedAnnotationCount) annotation overlays into recording.mp4.")
-            }
-        } catch {
-            try VideoUtilities.copyFinalRecording(rawURL: context.rawRecordingURL, finalURL: context.finalRecordingURL)
-            processingNotes.append("Processed video rendering failed; recording.mp4 is a raw copy. Error: \(error.localizedDescription)")
-            processedVideo = ProcessedVideoResult(
-                duration: duration,
-                renderSize: capture.outputSize ?? CodableSize(width: 0, height: 0),
-                pointerEvents: pointerEvents,
-                renderedClickCount: 0,
-                annotations: annotations,
-                renderedAnnotationCount: 0,
-                notes: []
-            )
-        }
-        stageTimings.append(processingTiming("render-processed-video", startedAt: renderStart))
-
-        let overlayMetadataStart = Date()
-        try JSONEncoder.synEncoder.encode(processedVideo.pointerEvents).write(to: context.pointerEventsURL)
-        try JSONEncoder.synEncoder.encode(processedVideo.annotations).write(to: context.annotationEventsURL)
-        stageTimings.append(processingTiming("write-pointer-and-annotation-metadata", startedAt: overlayMetadataStart))
-
-        let frameResult: FrameExtractionResult
-        let frameExtractionStart = Date()
-        do {
-            frameResult = try await frameExtractor.extractFrames(
-                from: context.finalRecordingURL,
-                context: context,
-                capture: capture,
-                activeWindowSamples: activeWindowSamples
-            )
-        } catch {
-            processingNotes.append("Frame extraction failed: \(error.localizedDescription)")
-            let emptyFrames: [CandidateFrameMetadata] = []
-            try JSONEncoder.synEncoder.encode(emptyFrames).write(to: context.candidateMetadataURL)
-            frameResult = FrameExtractionResult(candidateFrames: [], selectedFrames: [], duration: duration)
-        }
-        stageTimings.append(processingTiming("extract-frames-and-ocr", startedAt: frameExtractionStart))
-
-        let transcriptResult: TranscriptResult
-        let transcriptionStart = Date()
-        do {
-            transcriptResult = try await transcriptionService.transcribe(videoURL: context.finalRecordingURL, context: context)
-        } catch {
-            processingNotes.append("Transcription failed: \(error.localizedDescription)")
-            let markdown = """
-            # Transcript
-
-            Local Whisper transcription failed.
-
-            Error: \(error.localizedDescription)
-            """
-            try markdown.write(to: context.transcriptURL, atomically: true, encoding: .utf8)
-            transcriptResult = TranscriptResult(
-                markdown: markdown,
-                provider: "local-whisper.cpp",
-                model: "unavailable",
-                notes: [error.localizedDescription]
-            )
-        }
-        stageTimings.append(processingTiming("transcribe-local-whisper", startedAt: transcriptionStart))
-
-        let framePlanningStart = Date()
-        var framePlanningResult = await framePlanningService.planFrames(
-            extraction: frameResult,
-            transcript: transcriptResult.markdown,
-            context: context
+        // The video branch (render -> overlay metadata -> frame extraction) needs a video.
+        // The transcript branch needs only the audio track, which is already present in the
+        // raw merged recording. They have no mutual data dependency and write disjoint files,
+        // so run them concurrently and join before frame planning. This collapses the two
+        // longest independent stages into one wall-clock window.
+        async let videoBranch = renderAndExtract(
+            context: context,
+            capture: capture,
+            pointerEvents: pointerEvents,
+            annotations: annotations,
+            activeWindowSamples: activeWindowSamples,
+            duration: duration
         )
-        stageTimings.append(processingTiming("plan-semantic-frames-openai", startedAt: framePlanningStart))
+        async let transcriptBranch = transcribeFromRaw(context: context)
+
+        let video = await videoBranch
+        let transcript = await transcriptBranch
+        let processedVideo = video.processedVideo
+        let frameResult = video.frameResult
+        let transcriptResult = transcript.result
+        processingNotes.append(contentsOf: video.notes)
+        processingNotes.append(contentsOf: transcript.notes)
+        stageTimings.append(contentsOf: video.timings)
+        stageTimings.append(contentsOf: transcript.timings)
+
+        // The OpenAI frame plan is always run synchronously (it determines the packet's selected
+        // frames + semantic timeline). The Claude/GPT summary is DEFERRED for interactive
+        // recordings: it is the dominant cost (output-generation-bound) and is produced in layered
+        // tiers in the background after the folder is revealed (see runDeferredFinalize).
+        var framePlanningResult: FramePlanningResult
+        let summaryResult: SummaryResult
+        if deferFinalize {
+            let framePlanStart = Date()
+            framePlanningResult = await framePlanningService.planFrames(
+                extraction: frameResult,
+                transcript: transcriptResult.markdown,
+                context: context
+            )
+            stageTimings.append(processingTiming("plan-semantic-frames-openai", startedAt: framePlanStart))
+            summaryResult = SummaryResult(
+                markdown: "",
+                provider: "pending",
+                model: "deferred",
+                notes: ["Summary is generating in the background; see progress.md."]
+            )
+        } else {
+            // Fixtures/retry: frame plan + a single synchronous summary run concurrently. Both read
+            // the extracted frame files BEFORE the prune below, so there is no file race.
+            async let planPair: (result: FramePlanningResult, seconds: Double) = {
+                let started = Date()
+                let result = await framePlanningService.planFrames(
+                    extraction: frameResult, transcript: transcriptResult.markdown, context: context)
+                return (result, Date().timeIntervalSince(started))
+            }()
+            async let summaryPair: (result: SummaryResult, seconds: Double) = {
+                let started = Date()
+                let result = await aiProviderService.createSummary(
+                    transcript: transcriptResult.markdown, frames: frameResult.selectedFrames, context: context)
+                return (result, Date().timeIntervalSince(started))
+            }()
+            let plan = await planPair
+            let summary = await summaryPair
+            framePlanningResult = plan.result
+            summaryResult = summary.result
+            stageTimings.append(ProcessingStageTiming(name: "plan-semantic-frames-openai", durationSeconds: plan.seconds))
+            stageTimings.append(ProcessingStageTiming(name: "summarize-claude", durationSeconds: summary.seconds))
+        }
         processingNotes.append(contentsOf: framePlanningResult.notes)
+
+        // Prune unselected frame files after the frame plan. The deferred summary reloads the
+        // surviving selected frames from disk, so the prune is safe before it runs.
         let semanticArtifactsStart = Date()
         framePlanningResult.candidateFrames = pruneUnselectedFrameFiles(
             framePlanningResult.candidateFrames,
@@ -338,62 +527,111 @@ final class PacketProcessor {
         try writeSemanticArtifacts(context: context, segments: framePlanningResult.semanticSegments)
         stageTimings.append(processingTiming("write-frame-and-semantic-artifacts", startedAt: semanticArtifactsStart))
 
-        let summaryStart = Date()
-        let summaryResult = await aiProviderService.createSummary(
-            transcript: transcriptResult.markdown,
-            frames: framePlanningResult.selectedFrames,
-            context: context
-        )
-        stageTimings.append(processingTiming("summarize-claude", startedAt: summaryStart))
         processingNotes.append(contentsOf: transcriptResult.notes)
         processingNotes.append(contentsOf: summaryResult.notes)
-        try summaryResult.markdown.write(to: context.summaryURL, atomically: true, encoding: .utf8)
-
-        let manifestPromptStart = Date()
-        var manifest = makeManifest(
-            context: context,
-            duration: duration,
-            capture: capture,
-            transcriptResult: transcriptResult,
-            framePlanningResult: framePlanningResult,
-            summaryResult: summaryResult,
-            processingNotes: processingNotes,
-            pauses: pauses,
-            processedVideo: processedVideo,
-            hasActiveWindowSamples: !activeWindowSamples.isEmpty,
-            stageTimings: stageTimings
-        )
-
-        try JSONEncoder.synEncoder.encode(manifest).write(to: context.manifestURL)
-        var prompt = try writeAgentPrompts(context: context, manifest: manifest)
-        stageTimings.append(processingTiming("write-manifest-and-agent-prompts", startedAt: manifestPromptStart))
-
-        let zipStart = Date()
-        do {
-            try ZipService.createZip(for: context)
-        } catch {
-            processingNotes.append("Zip creation failed: \(error.localizedDescription)")
+        // Surface a blank transcript as an explicit, actionable note instead of silently
+        // shipping an empty transcript (e.g. denied microphone permission or a silent clip).
+        let spokenTranscript = transcriptResult.markdown
+            .replacingOccurrences(of: "# Transcript", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if spokenTranscript.isEmpty || spokenTranscript.contains("No speech was detected") {
+            processingNotes.append("Transcript is empty: no narration audio was detected. Confirm microphone permission is granted to Syn and that you spoke during the recording.")
         }
-        stageTimings.append(processingTiming("create-default-zip", startedAt: zipStart))
-        processingNotes.append(stageTimingSummary(stageTimings))
 
-        manifest = makeManifest(
-            context: context,
-            duration: duration,
-            capture: capture,
-            transcriptResult: transcriptResult,
-            framePlanningResult: framePlanningResult,
-            summaryResult: summaryResult,
-            processingNotes: processingNotes,
-            pauses: pauses,
-            processedVideo: processedVideo,
-            hasActiveWindowSamples: !activeWindowSamples.isEmpty,
-            stageTimings: stageTimings
-        )
-        try JSONEncoder.synEncoder.encode(manifest).write(to: context.manifestURL)
-        prompt = try writeAgentPrompts(context: context, manifest: manifest)
+        func wallClockTiming() -> ProcessingStageTiming {
+            ProcessingStageTiming(
+                name: "pipeline-wall-clock-total",
+                durationSeconds: max(0, Date().timeIntervalSince(pipelineStart))
+            )
+        }
 
+        let manifest: PacketManifest
+        let prompt: String
+        if deferFinalize {
+            // Interactive: write a placeholder summary + initial progress.md, then return so the
+            // folder reveals immediately. runDeferredFinalize produces the layered summary, promotes
+            // summary.md, refreshes the handoff, and creates the zip — all in the background.
+            try Self.summaryPlaceholderMarkdown().write(to: context.summaryURL, atomically: true, encoding: .utf8)
+            writeProgressFile(
+                context: context,
+                lineups: progressiveLineups(),
+                outcomes: [],
+                zipReady: false,
+                summaryComplete: false
+            )
+            stageTimings.append(wallClockTiming())
+            processingNotes.append(stageTimingSummary(stageTimings))
+            var deferredManifest = makeManifest(
+                context: context, duration: duration, capture: capture,
+                transcriptResult: transcriptResult, framePlanningResult: framePlanningResult,
+                summaryResult: summaryResult, processingNotes: processingNotes, pauses: pauses,
+                processedVideo: processedVideo, hasActiveWindowSamples: !activeWindowSamples.isEmpty,
+                stageTimings: stageTimings
+            )
+            deferredManifest.processing.zipStatus = "pending"
+            deferredManifest.processing.summaryStatus = "pending"
+            try JSONEncoder.synEncoder.encode(deferredManifest).write(to: context.manifestURL)
+            prompt = try writeAgentPrompts(context: context, manifest: deferredManifest)
+            manifest = deferredManifest
+        } else {
+            // Fixtures/retry: summary is done; write it, the manifest + prompts, then zip
+            // synchronously and rewrite the manifest with the final zip/wall-clock timings.
+            try summaryResult.markdown.write(to: context.summaryURL, atomically: true, encoding: .utf8)
+            writeProgressFile(
+                context: context,
+                lineups: [("summary", [SummaryTier(label: "full", provider: .anthropic, model: summaryResult.model, maxTokens: 4000)])],
+                outcomes: [SummaryTierOutcome(lineup: "summary", tier: SummaryTier(label: "full", provider: .anthropic, model: summaryResult.model, maxTokens: 4000), provider: summaryResult.provider, seconds: 0, succeeded: summaryResult.provider != "local-fallback")],
+                zipReady: false,
+                summaryComplete: true
+            )
+            let preliminaryManifest = makeManifest(
+                context: context, duration: duration, capture: capture,
+                transcriptResult: transcriptResult, framePlanningResult: framePlanningResult,
+                summaryResult: summaryResult, processingNotes: processingNotes, pauses: pauses,
+                processedVideo: processedVideo, hasActiveWindowSamples: !activeWindowSamples.isEmpty,
+                stageTimings: stageTimings
+            )
+            try JSONEncoder.synEncoder.encode(preliminaryManifest).write(to: context.manifestURL)
+            _ = try writeAgentPrompts(context: context, manifest: preliminaryManifest)
+
+            let zipStart = Date()
+            do {
+                try ZipService.createZip(for: context)
+            } catch {
+                processingNotes.append("Zip creation failed: \(error.localizedDescription)")
+            }
+            stageTimings.append(processingTiming("create-default-zip", startedAt: zipStart))
+            stageTimings.append(wallClockTiming())
+            processingNotes.append(stageTimingSummary(stageTimings))
+
+            var finalManifest = makeManifest(
+                context: context, duration: duration, capture: capture,
+                transcriptResult: transcriptResult, framePlanningResult: framePlanningResult,
+                summaryResult: summaryResult, processingNotes: processingNotes, pauses: pauses,
+                processedVideo: processedVideo, hasActiveWindowSamples: !activeWindowSamples.isEmpty,
+                stageTimings: stageTimings
+            )
+            finalManifest.processing.zipStatus = "ready"
+            finalManifest.processing.summaryStatus = "ready"
+            try JSONEncoder.synEncoder.encode(finalManifest).write(to: context.manifestURL)
+            writeProgressFile(
+                context: context,
+                lineups: [("summary", [SummaryTier(label: "full", provider: .anthropic, model: summaryResult.model, maxTokens: 4000)])],
+                outcomes: [SummaryTierOutcome(lineup: "summary", tier: SummaryTier(label: "full", provider: .anthropic, model: summaryResult.model, maxTokens: 4000), provider: summaryResult.provider, seconds: 0, succeeded: summaryResult.provider != "local-fallback")],
+                zipReady: true,
+                summaryComplete: true
+            )
+            prompt = try writeAgentPrompts(context: context, manifest: finalManifest)
+            manifest = finalManifest
+        }
         copyToClipboard(prompt, folderURL: context.folderURL)
+
+        // Stream the per-stage timing breakdown + which providers ran so a slow finalize can be
+        // diagnosed live via `--telemetry` or ~/Library/Logs/Syn/perf.log.
+        SynPerf.event("packet processed (deferFinalize=\(deferFinalize)): transcription=\(transcriptResult.provider), framePlan=\(framePlanningResult.provider)/\(framePlanningResult.model ?? "none"), summary=\(summaryResult.provider)/\(summaryResult.model)")
+        for timing in stageTimings {
+            SynPerf.log("stage \(timing.name)", seconds: timing.durationSeconds)
+        }
 
         let packetStatus = packetStatus(for: processingNotes)
         let packet = PacketSummary(
@@ -407,6 +645,112 @@ final class PacketProcessor {
         )
 
         return PacketProcessingResult(packet: packet, manifest: manifest)
+    }
+
+    /// Video branch: render the processed recording, persist overlay metadata, and extract
+    /// frames + OCR. Needs a video and runs concurrently with `transcribeFromRaw`.
+    private func renderAndExtract(
+        context: PacketContext,
+        capture: CaptureSourceMetadata,
+        pointerEvents: [PointerEvent],
+        annotations: [AnnotationStroke],
+        activeWindowSamples: [ActiveWindowSample],
+        duration: TimeInterval
+    ) async -> (processedVideo: ProcessedVideoResult, frameResult: FrameExtractionResult, notes: [String], timings: [ProcessingStageTiming]) {
+        var notes: [String] = []
+        var timings: [ProcessingStageTiming] = []
+
+        let processedVideo: ProcessedVideoResult
+        let renderStart = Date()
+        do {
+            processedVideo = try await VideoUtilities.renderProcessedRecording(
+                rawURL: context.rawRecordingURL,
+                finalURL: context.finalRecordingURL,
+                capture: capture,
+                pointerEvents: pointerEvents,
+                annotations: annotations,
+                activeWindowSamples: activeWindowSamples
+            )
+            notes.append(contentsOf: processedVideo.notes)
+            if processedVideo.renderedClickCount > 0 {
+                notes.append("Rendered \(processedVideo.renderedClickCount) click bubble overlays into recording.mp4.")
+            }
+            if processedVideo.renderedAnnotationCount > 0 {
+                notes.append("Rendered \(processedVideo.renderedAnnotationCount) annotation overlays into recording.mp4.")
+            }
+        } catch {
+            try? VideoUtilities.copyFinalRecording(rawURL: context.rawRecordingURL, finalURL: context.finalRecordingURL)
+            notes.append("Processed video rendering failed; recording.mp4 is a raw copy. Error: \(error.localizedDescription)")
+            processedVideo = ProcessedVideoResult(
+                duration: duration,
+                renderSize: capture.outputSize ?? CodableSize(width: 0, height: 0),
+                pointerEvents: pointerEvents,
+                renderedClickCount: 0,
+                annotations: annotations,
+                renderedAnnotationCount: 0,
+                notes: []
+            )
+        }
+        timings.append(processingTiming("render-processed-video", startedAt: renderStart))
+
+        let overlayMetadataStart = Date()
+        try? JSONEncoder.synEncoder.encode(processedVideo.pointerEvents).write(to: context.pointerEventsURL)
+        try? JSONEncoder.synEncoder.encode(processedVideo.annotations).write(to: context.annotationEventsURL)
+        timings.append(processingTiming("write-pointer-and-annotation-metadata", startedAt: overlayMetadataStart))
+
+        let frameResult: FrameExtractionResult
+        let frameExtractionStart = Date()
+        do {
+            frameResult = try await frameExtractor.extractFrames(
+                from: context.finalRecordingURL,
+                context: context,
+                capture: capture,
+                activeWindowSamples: activeWindowSamples
+            )
+        } catch {
+            notes.append("Frame extraction failed: \(error.localizedDescription)")
+            let emptyFrames: [CandidateFrameMetadata] = []
+            try? JSONEncoder.synEncoder.encode(emptyFrames).write(to: context.candidateMetadataURL)
+            frameResult = FrameExtractionResult(candidateFrames: [], selectedFrames: [], duration: duration)
+        }
+        timings.append(processingTiming("extract-frames-and-ocr", startedAt: frameExtractionStart))
+
+        return (processedVideo, frameResult, notes, timings)
+    }
+
+    /// Transcript branch: transcribe the raw recording's audio with local Whisper. Needs only
+    /// the audio track (available immediately after capture), so it runs concurrently with the
+    /// video render instead of waiting for it.
+    private func transcribeFromRaw(
+        context: PacketContext
+    ) async -> (result: TranscriptResult, notes: [String], timings: [ProcessingStageTiming]) {
+        var notes: [String] = []
+        var timings: [ProcessingStageTiming] = []
+
+        let transcriptResult: TranscriptResult
+        let transcriptionStart = Date()
+        do {
+            transcriptResult = try await transcriptionService.transcribe(videoURL: context.rawRecordingURL, context: context)
+        } catch {
+            notes.append("Transcription failed: \(error.localizedDescription)")
+            let markdown = """
+            # Transcript
+
+            Local Whisper transcription failed.
+
+            Error: \(error.localizedDescription)
+            """
+            try? markdown.write(to: context.transcriptURL, atomically: true, encoding: .utf8)
+            transcriptResult = TranscriptResult(
+                markdown: markdown,
+                provider: "local-whisper.cpp",
+                model: "unavailable",
+                notes: [error.localizedDescription]
+            )
+        }
+        timings.append(processingTiming("transcribe-local-whisper", startedAt: transcriptionStart))
+
+        return (transcriptResult, notes, timings)
     }
 
     private func makeManifest(
@@ -547,9 +891,11 @@ final class PacketProcessor {
             maxCharacters: 10_000,
             fallback: "Summary was not available. Read `summary.md` in the packet folder if it appears after retry."
         )
+        // The spoken transcript is the user's authoritative intent, so it gets a larger budget
+        // than the derived summary and is presented first below.
         let transcriptExcerpt = excerpt(
             readTextIfPresent(context.transcriptURL),
-            maxCharacters: 6_000,
+            maxCharacters: 12_000,
             fallback: "Transcript was not available. Read `transcript.md` in the packet folder if it appears after retry."
         )
         let projectContextExcerpt = excerpt(
@@ -626,7 +972,9 @@ final class PacketProcessor {
 
         - `recording.mp4`: processed final recording with cursor/click overlays where available
         - `transcript.md`: local Whisper transcript
-        - `summary.md`: Claude Opus or local fallback coding-agent summary
+        - `summary.md`: coding-agent summary. May be generating in the background — check `progress.md`; it is replaced by richer tiers as they finish, so re-read it if `progress.md` is not yet complete
+        - `progress.md`: live finalize status (what is ready, summary tiers + speed/quality A/B table, zip status)
+        - `summaries/`: per-tier summary outputs (fast/balanced/full, and both providers when A/B is on)
         - `manifest.json`: capture, processing, frame, pointer, and retry metadata
         - `agent-prompts/`: alternate agent prompt profiles
         - `project-context.md`: optional local project metadata snapshot when configured
@@ -674,13 +1022,15 @@ final class PacketProcessor {
 
         \(projectContextExcerpt)
 
+        ## Transcript Excerpt
+
+        Primary signal — prioritize what the user says. The spoken transcript is the authoritative record of what the user wants. Treat it as the primary intent and treat the summary, selected frames, and `recording.mp4` as corroborating evidence that confirms or locates what the user said.
+
+        \(transcriptExcerpt)
+
         ## Summary
 
         \(summaryExcerpt)
-
-        ## Transcript Excerpt
-
-        \(transcriptExcerpt)
         """
     }
 

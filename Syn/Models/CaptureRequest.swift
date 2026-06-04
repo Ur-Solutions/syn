@@ -93,6 +93,7 @@ struct PacketContext: Sendable {
     var semanticSegmentsURL: URL { folderURL.appendingPathComponent("semantic-segments.json") }
     var semanticTimelineURL: URL { folderURL.appendingPathComponent("semantic-timeline.md") }
     var manifestURL: URL { folderURL.appendingPathComponent("manifest.json") }
+    var progressURL: URL { folderURL.appendingPathComponent("progress.md") }
     var pointerEventsURL: URL { rawURL.appendingPathComponent("pointer-events.json") }
     var annotationEventsURL: URL { rawURL.appendingPathComponent("annotations.json") }
     var fullFramesURL: URL { folderURL.appendingPathComponent("frames/full", isDirectory: true) }

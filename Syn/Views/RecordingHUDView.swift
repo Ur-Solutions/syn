@@ -2,6 +2,8 @@ import SwiftUI
 
 struct RecordingHUDView: View {
     @EnvironmentObject private var appState: AppState
+    @State private var isDiscardArmed = false
+    @State private var disarmTask: Task<Void, Never>?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -66,6 +68,33 @@ struct RecordingHUDView: View {
         }
         .disabled(isProcessing)
         .help(appState.activeRecording?.isPaused == true ? "Resume" : "Pause")
+
+            Button(role: .destructive) {
+                if isDiscardArmed {
+                    disarmTask?.cancel()
+                    disarmTask = nil
+                    isDiscardArmed = false
+                    appState.discardRecording()
+                } else {
+                    isDiscardArmed = true
+                    disarmTask?.cancel()
+                    disarmTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        if !Task.isCancelled {
+                            isDiscardArmed = false
+                            disarmTask = nil
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: isDiscardArmed ? "trash.fill" : "trash")
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(isDiscardArmed ? .red : nil)
+            .disabled(isProcessing)
+            .help(isDiscardArmed ? "Click again to discard recording" : "Discard recording")
 
             Button(role: .destructive) {
                 appState.stopRecording()
@@ -183,7 +212,7 @@ final class RecordingHUDController {
         if panel == nil {
             let hostingView = NSHostingView(rootView: RecordingHUDView().environmentObject(appState))
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 460, height: 72),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 72),
                 styleMask: [.nonactivatingPanel, .hudWindow],
                 backing: .buffered,
                 defer: false

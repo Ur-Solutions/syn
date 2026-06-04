@@ -591,6 +591,12 @@ final class AppState: ObservableObject {
         }
     }
 
+    func discardRecording() {
+        Task {
+            await discardActiveRecording()
+        }
+    }
+
     func copyPacketHandoff(for packet: PacketSummary) {
         let promptURL = packet.folderURL.appendingPathComponent("agent-prompt.md")
         guard let prompt = try? String(contentsOf: promptURL, encoding: .utf8) else {
@@ -1152,6 +1158,7 @@ final class AppState: ObservableObject {
         do {
             statusMessage = "Stopping recording..."
             let stopRequestedAt = Date()
+            SynPerf.event("──── finalize start (mode=\(recording.mode.rawValue), elapsed=\(String(format: "%.1f", recording.elapsed(at: stopRequestedAt)))s) ────")
             if recording.phase == .paused,
                let pauseStartedAt = recording.pauseStartedAt {
                 pauseIntervals.append(PauseInterval(startedAt: pauseStartedAt, endedAt: stopRequestedAt))
@@ -1174,7 +1181,9 @@ final class AppState: ObservableObject {
             stopMicMeter()
             let activeWindowSamples = activeWindowTracker.stop()
             failureActiveWindowSamples = activeWindowSamples
+            let recorderStopStart = Date()
             let segments = try await recorder.stop()
+            SynPerf.log("recorder.stop (ScreenCaptureKit finalize)", seconds: Date().timeIntervalSince(recorderStopStart))
             var capture = recorder.sourceMetadata ?? CaptureSourceMetadata(
                 mode: recording.mode.rawValue,
                 displayID: nil,
@@ -1215,6 +1224,12 @@ final class AppState: ObservableObject {
             }
 
             statusMessage = "Processing packet..."
+            // Fixture-driven processing terminates the app right after the callback, so it must
+            // produce the summary + zip synchronously. Interactive recordings defer them: the
+            // packet folder is revealed immediately and the layered summary + zip finish after.
+            let isFixtureProcessing = (hotkeyRecordingFixture?.process == true)
+                || (selectorRecordingFixtureMode != nil && shouldProcessSelectorRecordingFixture)
+            let processStart = Date()
             let result = try await packetProcessor.process(
                 context: context,
                 segments: segments,
@@ -1222,8 +1237,10 @@ final class AppState: ObservableObject {
                 pointerEvents: pointerEvents,
                 annotations: annotations,
                 activeWindowSamples: activeWindowSamples,
-                pauses: pauseIntervals
+                pauses: pauseIntervals,
+                deferFinalize: !isFixtureProcessing
             )
+            SynPerf.log("packetProcessor.process (merge + pipeline)", seconds: Date().timeIntervalSince(processStart))
 
             replacePacket(result.packet)
             selectedPacketID = result.packet.id
@@ -1232,7 +1249,7 @@ final class AppState: ObservableObject {
             currentPermissionNotes = []
             stopDurationWarningMonitor()
             rememberSuccessfulCapture(mode: recording.mode)
-            statusMessage = "Packet ready. Agent prompt and packet folder copied; folder revealed."
+            statusMessage = "Packet ready. Folder revealed and copied; shareable zip is finishing in the background."
             RecordingHUDController.shared.hide()
             AnnotationOverlayController.shared.close()
                 if hotkeyRecordingFixture?.process == true {
@@ -1261,7 +1278,19 @@ final class AppState: ObservableObject {
                 recordSelectorRecording("zip=\(context.zipURL.path)")
                 terminateAfterFixtureCallback()
             } else {
+                SynPerf.log("TOTAL stop→packet-ready (folder revealed)", seconds: Date().timeIntervalSince(stopRequestedAt))
                 NSWorkspace.shared.activateFileViewerSelecting([context.folderURL])
+                // The packet folder and all core artifacts already exist; the layered summary and
+                // shareable zip finish off the critical path. Owned by the long-lived app (not a
+                // fire-and-forget task inside processing) so it isn't killed mid-flight; refreshes
+                // the UI when done so the "Reveal Zip" action appears.
+                let deferredContext = context
+                let deferredCapture = capture
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.packetProcessor.runDeferredFinalize(context: deferredContext, capture: deferredCapture)
+                    self.objectWillChange.send()
+                }
             }
         } catch {
             let pointerEvents = failurePointerEvents.isEmpty ? pointerRecorder.stop() : failurePointerEvents
@@ -1333,6 +1362,57 @@ final class AppState: ObservableObject {
                 terminateAfterFixtureCallback()
             }
         }
+    }
+
+    private func discardActiveRecording() async {
+        guard let context = currentPacket,
+              activeRecording != nil else {
+            return
+        }
+
+        statusMessage = "Discarding recording..."
+
+        // Stop capture and the live recorders without processing their output.
+        _ = try? await recorder.stop()
+        _ = pointerRecorder.stop()
+        _ = annotationRecorder.stop()
+        _ = activeWindowTracker.stop()
+        stopMicMeter()
+
+        // Cancel any fixture auto-stop tasks so they cannot fire after discard.
+        selectorRecordingStopTask?.cancel()
+        selectorRecordingStopTask = nil
+        hotkeyRecordingStopTask?.cancel()
+        hotkeyRecordingStopTask = nil
+        stopDurationWarningMonitor()
+
+        // Tear down HUD and annotation overlay.
+        RecordingHUDController.shared.hide()
+        AnnotationOverlayController.shared.close()
+
+        // Remove the pending packet from history and delete its folder on disk.
+        recentPackets.removeAll { $0.id == context.id }
+        if selectedPacketID == context.id {
+            selectedPacketID = recentPackets.first?.id
+        }
+        try? FileManager.default.removeItem(at: context.folderURL)
+        try? FileManager.default.removeItem(at: context.zipURL)
+        persistHistory()
+
+        // Reset all per-recording state (mirrors the startRecording catch block).
+        // Deliberately does NOT call rememberSuccessfulCapture, so repeat-last is unchanged.
+        activeRecording = nil
+        currentPacket = nil
+        currentPermissionNotes = []
+        pauseIntervals = []
+        currentCaptureRegion = nil
+        currentCaptureSelectedWindowID = nil
+        currentCaptureSelectedWindowTarget = nil
+        currentChromeTabTarget = nil
+        currentCaptureDisplayID = nil
+        selectedAnnotationTool = nil
+        visibleAnnotationStrokes = []
+        statusMessage = "Recording discarded."
     }
 
     private func scheduleSelectorRecordingFixtureStopIfNeeded() {

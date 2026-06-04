@@ -58,6 +58,12 @@ struct PacketProcessing: Codable {
     var status: String
     var notes: [String]
     var stageTimings: [ProcessingStageTiming]? = nil
+    /// "pending" while the shareable zip is still being created in the background after the
+    /// packet is otherwise complete, "ready" once it exists. nil for older/partial packets.
+    var zipStatus: String? = nil
+    /// "pending" while the layered summary is still generating in the background, "ready" once
+    /// the best tier has landed, "local-fallback" if every tier failed. nil for older packets.
+    var summaryStatus: String? = nil
 }
 
 struct ProcessingStageTiming: Codable {

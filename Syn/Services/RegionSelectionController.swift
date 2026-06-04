@@ -16,6 +16,7 @@ final class RegionSelectionController {
     private var completion: ((RegionSelection?) -> Void)?
     private var fixtureSelection: RegionSelection?
     private var fixtureMovedSelection = false
+    private var keyMonitor: Any?
 
     private init() {}
 
@@ -48,7 +49,7 @@ final class RegionSelectionController {
                     self?.finish(selection)
                 }
             )
-            let window = NSWindow(
+            let window = RegionSelectionPanelWindow(
                 contentRect: screen.frame,
                 styleMask: [.borderless],
                 backing: .buffered,
@@ -60,20 +61,57 @@ final class RegionSelectionController {
             window.isOpaque = false
             window.level = .screenSaver
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            window.makeFirstResponder(view)
             window.orderFrontRegardless()
+            window.makeKey()
+            window.makeFirstResponder(view)
             windows.append(window)
         }
 
         NSApp.activate(ignoringOtherApps: true)
+        installKeyMonitor()
     }
 
     func cancel() {
+        removeKeyMonitor()
         windows.forEach { $0.orderOut(nil) }
         windows = []
         completion = nil
         fixtureSelection = nil
         fixtureMovedSelection = false
+    }
+
+    private func installKeyMonitor() {
+        removeKeyMonitor()
+        // A local key monitor delivers Enter/Escape regardless of which display's
+        // borderless overlay window is key. Escape cancels; Enter confirms whichever
+        // overlay currently holds a drawn selection.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else {
+                return event
+            }
+            switch event.keyCode {
+            case 53: // Escape
+                self.finish(nil)
+                return nil
+            case 36, 76: // Return / keypad Enter
+                for window in self.windows {
+                    if let view = window.contentView as? RegionSelectionView,
+                       view.confirmSelectionIfPresent() {
+                        return nil
+                    }
+                }
+                return event
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+        keyMonitor = nil
     }
 
     func confirmFixtureSelection() {
@@ -95,6 +133,7 @@ final class RegionSelectionController {
     }
 
     private func finish(_ selection: RegionSelection?) {
+        removeKeyMonitor()
         let handler = completion
         windows.forEach { $0.orderOut(nil) }
         windows = []
@@ -102,6 +141,11 @@ final class RegionSelectionController {
         fixtureSelection = nil
         handler?(selection)
     }
+}
+
+private final class RegionSelectionPanelWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
 }
 
 private final class RegionSelectionView: NSView {
@@ -282,6 +326,14 @@ private final class RegionSelectionView: NSView {
         } else if event.keyCode == 36, let selectedRect {
             complete(with: selectedRect)
         }
+    }
+
+    func confirmSelectionIfPresent() -> Bool {
+        guard let selectedRect else {
+            return false
+        }
+        complete(with: selectedRect)
+        return true
     }
 
     private func complete(with rect: CGRect) {

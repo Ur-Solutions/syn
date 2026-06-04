@@ -29,6 +29,7 @@ Optional modes:
 
 - [Specification corroboration](docs/SPEC_CORROBORATION.md)
 - [Implementation audit](docs/IMPLEMENTATION_AUDIT.md)
+- [Testing checklist](docs/TESTING_CHECKLIST.md)
 - [User input required](USER_INPUT_REQUIRED.md)
 
 ## Verification
@@ -131,7 +132,7 @@ To photograb the recording HUD and annotation controls directly:
 SYN_UI_SHOW_HUD=1 SYN_UI_WINDOW_TITLE="Syn Recording" ./script/capture_syn_ui.sh build/ui-captures/syn-recording-hud-annotations-current-2026-06-04.png
 ```
 
-The HUD includes pen, rectangle, arrow, clear, pause/resume, and stop controls. The smoke fixture verifies rectangle, arrow, and pen metadata plus burned-in annotation overlays in `recording.mp4`.
+The HUD includes pen, rectangle, arrow, clear, pause/resume, discard, and stop controls. The discard (trash) control is a two-step confirm: the first click arms it (the icon turns red), and a second click within a few seconds discards the in-progress recording without producing a packet. The smoke fixture verifies rectangle, arrow, and pen metadata plus burned-in annotation overlays in `recording.mp4`.
 
 To photograb the capture picker directly:
 

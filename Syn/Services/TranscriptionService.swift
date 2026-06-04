@@ -71,20 +71,40 @@ final class TranscriptionService {
 
         var body = "# Transcript\n\n"
 
-        if let vtt = try? String(contentsOf: vttURL, encoding: .utf8) {
-            let lines = vtt
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .map(String.init)
-                .filter { !$0.hasPrefix("WEBVTT") }
-            body += lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if let txt = try? String(contentsOf: txtURL, encoding: .utf8) {
-            body += txt.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Whisper emits a clean plain-text transcript via -otxt and a cue-timed VTT
+        // via -ovtt. Prefer the plain text; only fall back to the VTT (with cue
+        // timing/index/header lines stripped) so the transcript is readable prose
+        // instead of being polluted with "00:00:00.000 --> 00:00:06.320" cue noise.
+        if let txt = try? String(contentsOf: txtURL, encoding: .utf8) {
+            body += Self.cleanedTranscriptText(txt)
+        } else if let vtt = try? String(contentsOf: vttURL, encoding: .utf8) {
+            body += Self.cleanedTranscriptText(vtt)
         } else {
             body += "_No transcript text was emitted._"
         }
 
+        if body.trimmingCharacters(in: .whitespacesAndNewlines) == "# Transcript" {
+            body += "_No speech was detected in the recording (silent or no microphone audio)._"
+        }
+
         body += "\n"
         return body
+    }
+
+    private static func cleanedTranscriptText(_ raw: String) -> String {
+        raw
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { line in
+                if line.isEmpty { return false }
+                if line.hasPrefix("WEBVTT") { return false }
+                if line.contains("-->") { return false }      // VTT cue timing lines
+                if Int(line) != nil { return false }            // numeric cue indices
+                if line == "[BLANK_AUDIO]" { return false }     // whisper silence marker
+                return true
+            }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func extractAudio(from videoURL: URL, to audioURL: URL) async throws {
@@ -107,6 +127,7 @@ final class TranscriptionService {
             arguments: [
                 "-f", "WAVE",
                 "-d", "LEI16@16000",
+                "-c", "1",
                 videoURL.path,
                 audioURL.path
             ]

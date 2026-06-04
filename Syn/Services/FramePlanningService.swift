@@ -109,15 +109,17 @@ final class FramePlanningService {
         let prompt = """
         Select up to \(maxFrames) screenshot timestamps for a coding-agent feedback packet.
 
-        Use the transcript, visual-change metadata, and OCR text to prefer frames near semantic topic changes, specific UI states, bugs, design issues, or implementation-relevant moments. Avoid near-duplicates and avoid decorative choices.
+        The user's spoken transcript is the PRIMARY driver of this selection. Choose frames that best ILLUSTRATE the specific points, requests, bugs, and UI states the user TALKS ABOUT. Walk the narration in order and, for each distinct thing the user calls out, pick the candidate frame whose timestamp and on-screen content best shows what they are referring to.
+
+        The visual-change metadata and OCR text are SECONDARY: use them only to pick the clearest frame among visually similar candidates and to avoid near-duplicates and decorative choices. Do not select a frame just because it has a large visual change if the user never speaks to that moment.
 
         Return only timestamps that appear in the candidate list.
 
-        Candidate frames:
-        \(candidateLines)
+        PRIMARY - Transcript (drive selection from what the user says):
+        \(transcript.prefix(40_000))
 
-        Transcript:
-        \(transcript.prefix(20_000))
+        SECONDARY - Candidate frames (corroborating visuals; pick those that match the narration):
+        \(candidateLines)
         """
 
         let schema: [String: Any] = [
@@ -155,6 +157,9 @@ final class FramePlanningService {
                     "schema": schema
                 ]
             ],
+            // Frame selection is a lightweight ranking task; low reasoning keeps it fast
+            // (the default medium effort spends many seconds on hidden reasoning tokens).
+            "reasoning": ["effort": "low"],
             "max_output_tokens": 1200
         ]
 

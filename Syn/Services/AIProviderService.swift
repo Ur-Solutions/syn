@@ -7,7 +7,176 @@ struct SummaryResult: Sendable {
     var notes: [String]
 }
 
+enum SummaryModelProvider: String, Sendable {
+    case anthropic
+    case openai
+}
+
+/// One rung in a progressive summary lineup: a model + an output-token budget. The fast tier
+/// (small budget) lands almost immediately; richer tiers replace it as they finish.
+struct SummaryTier: Sendable {
+    var label: String          // "fast" | "balanced" | "full"
+    var provider: SummaryModelProvider
+    var model: String
+    var maxTokens: Int
+
+    /// Higher rung wins when promoting the canonical summary.md.
+    var rank: Int {
+        switch label {
+        case "fast": 0
+        case "balanced": 1
+        default: 2
+        }
+    }
+}
+
+enum SummaryLineups {
+    // gpt-5.5 has no nano/mini variants, so the fast/balanced rungs use the gpt-5.4 tiers.
+    static let gpt: [SummaryTier] = [
+        SummaryTier(label: "fast", provider: .openai, model: "gpt-5.4-nano", maxTokens: 300),
+        SummaryTier(label: "balanced", provider: .openai, model: "gpt-5.4-mini", maxTokens: 1000),
+        SummaryTier(label: "full", provider: .openai, model: "gpt-5.5", maxTokens: 5000)
+    ]
+    static let claude: [SummaryTier] = [
+        SummaryTier(label: "fast", provider: .anthropic, model: "claude-haiku-4-5", maxTokens: 300),
+        SummaryTier(label: "balanced", provider: .anthropic, model: "claude-sonnet-4-6", maxTokens: 1000),
+        SummaryTier(label: "full", provider: .anthropic, model: "claude-opus-4-8", maxTokens: 5000)
+    ]
+    /// Default progressive lineup used when A/B is off.
+    static let `default`: [SummaryTier] = claude
+}
+
+/// Editable lineup configuration. The app reads `~/Library/Application Support/Syn/summary.json`
+/// at the start of every deferred finalize, so models / token budgets / A/B can be swapped between
+/// captures without rebuilding or relaunching. A documented template is written on first use.
+struct SummaryConfig: Codable {
+    struct Tier: Codable {
+        var label: String
+        var provider: String   // "anthropic" | "openai"
+        var model: String
+        var maxTokens: Int
+    }
+    var ab: Bool?
+    var `default`: String?     // "claude" | "gpt"
+    var lineups: [String: [Tier]]?
+
+    var resolvedAB: Bool { ab ?? false }
+    var resolvedDefault: String { (`default` ?? "claude").lowercased() }
+
+    func tiers(_ name: String, fallback: [SummaryTier]) -> [SummaryTier] {
+        guard let raw = lineups?[name], !raw.isEmpty else { return fallback }
+        return raw.map {
+            SummaryTier(
+                label: $0.label,
+                provider: $0.provider.lowercased() == "openai" ? .openai : .anthropic,
+                model: $0.model,
+                maxTokens: $0.maxTokens
+            )
+        }
+    }
+}
+
+enum SummaryConfigStore {
+    static var fileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Syn/summary.json")
+    }
+
+    /// Load the lineup config, writing a template populated with the built-in defaults on first
+    /// use. Re-read per capture so edits take effect on the next recording.
+    static func load() -> SummaryConfig {
+        ensureTemplate()
+        guard let data = try? Data(contentsOf: fileURL),
+              let config = try? JSONDecoder().decode(SummaryConfig.self, from: data) else {
+            return SummaryConfig(ab: false, default: "claude", lineups: nil)
+        }
+        return config
+    }
+
+    private static func ensureTemplate() {
+        guard !FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        try? FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        func tierDicts(_ tiers: [SummaryTier]) -> [[String: Any]] {
+            tiers.map { ["label": $0.label, "provider": $0.provider.rawValue, "model": $0.model, "maxTokens": $0.maxTokens] }
+        }
+        let template: [String: Any] = [
+            "ab": false,
+            "default": "claude",
+            "lineups": [
+                "claude": tierDicts(SummaryLineups.claude),
+                "gpt": tierDicts(SummaryLineups.gpt)
+            ]
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: template, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: fileURL)
+        }
+    }
+}
+
 final class AIProviderService {
+    /// Generate one summary for a specific tier. Dispatches to the matching provider and degrades
+    /// to the local fallback when the key is missing or the call fails, so a single tier never
+    /// blocks the rest of the lineup.
+    func generateSummary(
+        tier: SummaryTier,
+        transcript: String,
+        frames: [CandidateFrameMetadata],
+        context: PacketContext,
+        anthropicKey: String?,
+        openAIKey: String?
+    ) async -> SummaryResult {
+        switch tier.provider {
+        case .anthropic:
+            guard let key = anthropicKey else {
+                return SummaryResult(
+                    markdown: fallbackSummary(transcript: transcript, frames: frames),
+                    provider: "local-fallback",
+                    model: "none",
+                    notes: ["\(tier.label) summary skipped: no Anthropic API key was available."]
+                )
+            }
+            do {
+                let markdown = try await callClaude(
+                    key: key, model: tier.model, maxTokens: tier.maxTokens,
+                    transcript: transcript, frames: frames, context: context
+                )
+                return SummaryResult(markdown: markdown, provider: "anthropic", model: tier.model, notes: [])
+            } catch {
+                return SummaryResult(
+                    markdown: fallbackSummary(transcript: transcript, frames: frames),
+                    provider: "local-fallback",
+                    model: "none",
+                    notes: ["\(tier.label) summary failed (\(tier.model)): \(error.localizedDescription)"]
+                )
+            }
+        case .openai:
+            guard let key = openAIKey else {
+                return SummaryResult(
+                    markdown: fallbackSummary(transcript: transcript, frames: frames),
+                    provider: "local-fallback",
+                    model: "none",
+                    notes: ["\(tier.label) summary skipped: no OpenAI API key was available."]
+                )
+            }
+            do {
+                let markdown = try await callOpenAISummary(
+                    key: key, model: tier.model, maxTokens: tier.maxTokens,
+                    transcript: transcript, frames: frames, context: context
+                )
+                return SummaryResult(markdown: markdown, provider: "openai", model: tier.model, notes: [])
+            } catch {
+                return SummaryResult(
+                    markdown: fallbackSummary(transcript: transcript, frames: frames),
+                    provider: "local-fallback",
+                    model: "none",
+                    notes: ["\(tier.label) summary failed (\(tier.model)): \(error.localizedDescription)"]
+                )
+            }
+        }
+    }
+
     func createSummary(
         transcript: String,
         frames: [CandidateFrameMetadata],
@@ -24,8 +193,11 @@ final class AIProviderService {
         }
 
         do {
-            let markdown = try await callClaude(key: key, transcript: transcript, frames: frames, context: context)
-            return SummaryResult(markdown: markdown, provider: "anthropic", model: "claude-opus-4-8", notes: [])
+            let markdown = try await callClaude(
+                key: key, model: "claude-sonnet-4-6", maxTokens: 4000,
+                transcript: transcript, frames: frames, context: context
+            )
+            return SummaryResult(markdown: markdown, provider: "anthropic", model: "claude-sonnet-4-6", notes: [])
         } catch {
             let fallback = fallbackSummary(transcript: transcript, frames: frames)
             return SummaryResult(
@@ -39,18 +211,23 @@ final class AIProviderService {
 
     private func callClaude(
         key: String,
+        model: String,
+        maxTokens: Int,
         transcript: String,
         frames: [CandidateFrameMetadata],
         context: PacketContext
     ) async throws -> String {
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
-        request.timeoutInterval = 90
+        request.timeoutInterval = 180
         request.httpMethod = "POST"
         request.setValue(key, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.httpBody = try JSONSerialization.data(
-            withJSONObject: Self.claudeRequestBody(transcript: transcript, frames: frames, context: context)
+            withJSONObject: Self.claudeRequestBody(
+                model: model, maxTokens: maxTokens,
+                transcript: transcript, frames: frames, context: context
+            )
         )
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -77,10 +254,15 @@ final class AIProviderService {
         frames: [CandidateFrameMetadata],
         context: PacketContext
     ) -> [String: Any] {
-        claudeRequestBody(transcript: transcript, frames: frames, context: context)
+        claudeRequestBody(
+            model: "claude-sonnet-4-6", maxTokens: 4000,
+            transcript: transcript, frames: frames, context: context
+        )
     }
 
     private static func claudeRequestBody(
+        model: String,
+        maxTokens: Int,
         transcript: String,
         frames: [CandidateFrameMetadata],
         context: PacketContext
@@ -110,8 +292,8 @@ final class AIProviderService {
         }
 
         return [
-            "model": "claude-opus-4-8",
-            "max_tokens": 4000,
+            "model": model,
+            "max_tokens": maxTokens,
             "messages": [[
                 "role": "user",
                 "content": content
@@ -119,9 +301,89 @@ final class AIProviderService {
         ]
     }
 
+    private func callOpenAISummary(
+        key: String,
+        model: String,
+        maxTokens: Int,
+        transcript: String,
+        frames: [CandidateFrameMetadata],
+        context: PacketContext
+    ) async throws -> String {
+        let selectedFrames = Array(frames.prefix(8))
+        var content: [[String: Any]] = [[
+            "type": "input_text",
+            "text": Self.summaryPrompt(transcript: transcript, frames: selectedFrames)
+        ]]
+        for frame in selectedFrames {
+            guard let path = frame.compressedPath,
+                  let data = try? Data(contentsOf: context.folderURL.appendingPathComponent(path)) else {
+                continue
+            }
+            content.append([
+                "type": "input_image",
+                "image_url": "data:image/jpeg;base64,\(data.base64EncodedString())"
+            ])
+        }
+
+        let body: [String: Any] = [
+            "model": model,
+            "input": [["role": "user", "content": content]],
+            "max_output_tokens": maxTokens
+        ]
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        request.timeoutInterval = 180
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let message = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            throw NSError(domain: "Syn.OpenAI", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = Self.extractOpenAIOutputText(from: json),
+              !text.isEmpty else {
+            return fallbackSummary(transcript: transcript, frames: frames)
+        }
+        return text
+    }
+
+    private static func extractOpenAIOutputText(from object: Any) -> String? {
+        if let dictionary = object as? [String: Any] {
+            if let text = dictionary["output_text"] as? String, !text.isEmpty {
+                return text
+            }
+            if dictionary["type"] as? String == "output_text", let text = dictionary["text"] as? String {
+                return text
+            }
+            for value in dictionary.values {
+                if let text = extractOpenAIOutputText(from: value) {
+                    return text
+                }
+            }
+        }
+        if let array = object as? [Any] {
+            let parts = array.compactMap { extractOpenAIOutputText(from: $0) }
+            if !parts.isEmpty {
+                return parts.joined(separator: "\n")
+            }
+        }
+        return nil
+    }
+
     private static func summaryPrompt(transcript: String, frames: [CandidateFrameMetadata]) -> String {
         """
         You are preparing an implementation-agent feedback packet from a narrated screen recording.
+
+        AUTHORITY AND WEIGHTING (read first):
+        - The spoken transcript is the PRIMARY and authoritative source of the user's intent, requests, priorities, and reasoning. Treat what the user SAYS as what they MEAN, and drive every section of your output from the transcript.
+        - The selected frames and their metadata (OCR, window titles, pixel-diff, bounds) are SECONDARY, corroborating evidence. Use them only to confirm, locate, illustrate, or timestamp points the user makes in the transcript. Do not introduce a priority, issue, or task that the transcript does not support.
+        - When the transcript and the visuals appear to disagree, the transcript wins for intent; record the visual discrepancy under Open Questions And Uncertainty rather than overriding what the user said.
+        - If the transcript is silent about something the visuals show, mention it only under Open Questions And Uncertainty, clearly marked as not stated by the user.
 
         Produce concise markdown using these exact section headings:
         # Summary
@@ -132,11 +394,12 @@ final class AIProviderService {
         ## Suggested Implementation Tasks
         ## Open Questions And Uncertainty
 
-        Use explicit uncertainty when the transcript, selected images, or metadata do not prove something. Reference frame filenames and timestamps where possible. The attached images are compressed/downscaled JPEGs in the same order as the selected-frame metadata below; raw audio and raw video are not attached.
+        Use explicit uncertainty when the transcript does not prove something; the frames and metadata are corroboration, not independent intent. Reference frame filenames and timestamps where possible. The attached images are compressed/downscaled JPEGs in the same order as the selected-frame metadata below; raw audio and raw video are not attached.
 
-        Transcript:
+        PRIMARY SOURCE - Spoken transcript (authoritative; base your deductions on what the user says):
         \(transcript)
 
+        SECONDARY SOURCE - Selected frame metadata (corroborating visuals only):
         Selected frame metadata:
         \(selectedFrameMetadataLines(frames))
         """
@@ -226,7 +489,7 @@ final class AIProviderService {
             return "- \(timestampString(frame.timestamp)): selected frame from \(bounds). Verify the visual state directly in the referenced frame before treating this as implementation evidence."
         }.joined(separator: "\n")
 
-        let transcriptPreview = String(transcript.prefix(4000))
+        let transcriptPreview = String(transcript.prefix(12000))
 
         return """
         # Summary

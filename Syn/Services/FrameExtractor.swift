@@ -90,8 +90,12 @@ final class FrameExtractor {
             let hash = perceptualHash(for: image)
             let pixelSample = grayscaleSample(for: image, width: 64, height: 36)
             let diff = previousPixelSample.map { normalizedMeanAbsoluteDifference($0, pixelSample) }
-            let ocr = Self.recognizeText(in: image)
             let selected = diff == nil || (diff ?? 0) > 0.006
+            // OCR is the most expensive per-frame step; only run it on frames we keep
+            // (near-duplicate frames that get deduped out never reach the packet).
+            let ocr = selected
+                ? Self.recognizeText(in: image)
+                : FrameOCRRecognitionResult(text: nil, meanConfidence: nil, observations: [])
             let filename = timestampFilename(timestamp)
 
             var fullPath: String?
