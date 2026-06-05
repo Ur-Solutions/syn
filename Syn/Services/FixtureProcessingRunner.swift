@@ -378,13 +378,23 @@ enum FixtureProcessingRunner {
             ),
             AnnotationStroke(
                 id: UUID(),
-                tool: .arrow,
+                tool: .line,
                 startTimestamp: 1.0,
                 endTimestamp: 1.4,
                 sourcePoints: [CodablePoint(x: 760, y: 520), CodablePoint(x: 1030, y: 300)],
                 videoPoints: nil,
                 colorHex: "#FF2D55",
                 lineWidth: 9
+            ),
+            AnnotationStroke(
+                id: UUID(),
+                tool: .ellipse,
+                startTimestamp: 1.2,
+                endTimestamp: 1.8,
+                sourcePoints: [CodablePoint(x: 650, y: 230), CodablePoint(x: 1040, y: 110)],
+                videoPoints: nil,
+                colorHex: "#FF2D55",
+                lineWidth: 8
             ),
             AnnotationStroke(
                 id: UUID(),
@@ -634,11 +644,21 @@ enum FixtureProcessingRunner {
         let bothShiftFlags = shiftMask | leftShiftMask | rightShiftMask
 
         var actions: [String] = []
+        var canvasActions: [String] = []
         service.onOpenPicker = {
             actions.append("picker")
         }
         service.onRepeatLastCapture = {
             actions.append("repeat")
+        }
+        service.onToggleCanvasMode = {
+            canvasActions.append("toggle")
+        }
+        service.onSelectCanvasTool = { tool in
+            canvasActions.append("tool:\(tool.rawValue)")
+        }
+        service.onClearCanvas = {
+            canvasActions.append("clear")
         }
         func holdRepeatChordLongEnough() async {
             try? await Task.sleep(nanoseconds: 650_000_000)
@@ -1109,9 +1129,147 @@ enum FixtureProcessingRunner {
             && actions == ["repeat"]
             && !service.hasPendingRepeatForTesting()
 
+        actions.removeAll()
+        canvasActions.removeAll()
+        service.resetChordStateForTesting()
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(8),
+            type: .keyDown
+        )
+        let canvasTogglePassed = actions.isEmpty
+            && canvasActions == ["toggle"]
+            && !service.hasPendingRepeatForTesting()
+
+        actions.removeAll()
+        canvasActions.removeAll()
+        service.resetChordStateForTesting()
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(18),
+            type: .keyDown
+        )
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(19),
+            type: .keyDown
+        )
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(20),
+            type: .keyDown
+        )
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(21),
+            type: .keyDown
+        )
+        let canvasToolShortcutsPassed = actions.isEmpty
+            && canvasActions == ["tool:pen", "tool:line", "tool:rectangle", "tool:ellipse"]
+            && !service.hasPendingRepeatForTesting()
+
+        actions.removeAll()
+        canvasActions.removeAll()
+        service.resetChordStateForTesting()
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(2),
+            type: .keyDown
+        )
+        let firstDDoesNotClear = canvasActions.isEmpty
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(2),
+            type: .keyUp
+        )
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(2),
+            type: .keyDown
+        )
+        let canvasClearDoubleTapPassed = firstDDoesNotClear
+            && actions.isEmpty
+            && canvasActions == ["clear"]
+            && !service.hasPendingRepeatForTesting()
+
+        actions.removeAll()
+        canvasActions.removeAll()
+        service.resetChordStateForTesting()
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(2),
+            type: .keyDown
+        )
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(2),
+            type: .keyDown
+        )
+        let heldDDoesNotClearPassed = canvasActions.isEmpty
+            && !service.hasPendingRepeatForTesting()
+
+        actions.removeAll()
+        canvasActions.removeAll()
+        service.resetChordStateForTesting()
+        service.handleKeyEventForTesting(
+            leftShift: true,
+            rightShift: true,
+            r: false,
+            keyCode: rightShiftKeyCode,
+            type: .flagsChanged
+        )
+        service.handleKeyEventForTesting(
+            leftShift: true,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(8),
+            type: .keyDown
+        )
+        service.handleKeyEventForTesting(
+            leftShift: true,
+            rightShift: false,
+            r: false,
+            keyCode: rightShiftKeyCode,
+            type: .flagsChanged
+        )
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: false,
+            r: false,
+            keyCode: leftShiftKeyCode,
+            type: .flagsChanged
+        )
+        service.firePendingRepeatForTesting()
+        let bothShiftCDoesNotTriggerCanvasPassed = actions.isEmpty
+            && canvasActions.isEmpty
+            && !service.hasPendingRepeatForTesting()
+
         service.resetChordStateForTesting()
         service.onOpenPicker = nil
         service.onRepeatLastCapture = nil
+        service.onToggleCanvasMode = nil
+        service.onSelectCanvasTool = nil
+        service.onClearCanvas = nil
 
         let passed = pickerPassed
             && rPreheldPickerPassed
@@ -1131,6 +1289,11 @@ enum FixtureProcessingRunner {
             && humanGapPickerWins
             && mediumHumanGapPickerWins
             && lateHumanGapRepeatWins
+            && canvasTogglePassed
+            && canvasToolShortcutsPassed
+            && canvasClearDoubleTapPassed
+            && heldDDoesNotClearPassed
+            && bothShiftCDoesNotTriggerCanvasPassed
 
         if !passed {
             print("SYN_HOTKEY_CASE_DUPLICATE_MODIFIER_ACTIONS=\(duplicateModifierEventActions.joined(separator: ","))")
@@ -1154,6 +1317,11 @@ enum FixtureProcessingRunner {
             print("SYN_HOTKEY_CASE_HUMAN_GAP_PICKER=\(humanGapPickerWins ? "passed" : "failed")")
             print("SYN_HOTKEY_CASE_MEDIUM_HUMAN_GAP_PICKER=\(mediumHumanGapPickerWins ? "passed" : "failed")")
             print("SYN_HOTKEY_CASE_LATE_HUMAN_GAP_REPEAT=\(lateHumanGapRepeatWins ? "passed" : "failed")")
+            print("SYN_HOTKEY_CASE_CANVAS_TOGGLE=\(canvasTogglePassed ? "passed" : "failed")")
+            print("SYN_HOTKEY_CASE_CANVAS_TOOLS=\(canvasToolShortcutsPassed ? "passed" : "failed")")
+            print("SYN_HOTKEY_CASE_CANVAS_CLEAR_DOUBLE_TAP=\(canvasClearDoubleTapPassed ? "passed" : "failed")")
+            print("SYN_HOTKEY_CASE_CANVAS_HELD_D_NO_CLEAR=\(heldDDoesNotClearPassed ? "passed" : "failed")")
+            print("SYN_HOTKEY_CASE_BOTH_SHIFT_C_NO_CANVAS=\(bothShiftCDoesNotTriggerCanvasPassed ? "passed" : "failed")")
         }
 
         return passed
@@ -2693,6 +2861,26 @@ enum FixtureProcessingRunner {
             ),
             AnnotationStroke(
                 id: UUID(),
+                tool: .line,
+                startTimestamp: 0.45,
+                endTimestamp: 0.85,
+                sourcePoints: [CodablePoint(x: 720, y: 160), CodablePoint(x: 1080, y: 200)],
+                videoPoints: nil,
+                colorHex: "#FF2D55",
+                lineWidth: 8
+            ),
+            AnnotationStroke(
+                id: UUID(),
+                tool: .ellipse,
+                startTimestamp: 0.5,
+                endTimestamp: 0.95,
+                sourcePoints: [CodablePoint(x: 650, y: 250), CodablePoint(x: 1080, y: 120)],
+                videoPoints: nil,
+                colorHex: "#FF2D55",
+                lineWidth: 8
+            ),
+            AnnotationStroke(
+                id: UUID(),
                 tool: .pen,
                 startTimestamp: 0.5,
                 endTimestamp: 1.0,
@@ -2722,8 +2910,8 @@ enum FixtureProcessingRunner {
 
         return AnnotationRenderFixtureResult(
             passed: outputSize > 0
-                && result.renderedAnnotationCount == 3
-                && mappedCount == 3
+                && result.renderedAnnotationCount == 5
+                && mappedCount == 5
                 && colorPixels > 100,
             renderSize: result.renderSize,
             renderedAnnotationCount: result.renderedAnnotationCount,
@@ -2748,8 +2936,12 @@ enum FixtureProcessingRunner {
         let pausedInputIgnored = recorder.visibleStrokes.count == 1
         recorder.resume()
 
-        recorder.begin(tool: .arrow, at: CGPoint(x: 200, y: 220))
+        recorder.begin(tool: .line, at: CGPoint(x: 200, y: 220))
         recorder.update(at: CGPoint(x: 420, y: 340))
+        recorder.finishDraft()
+
+        recorder.begin(tool: .ellipse, at: CGPoint(x: 120, y: 120))
+        recorder.update(at: CGPoint(x: 320, y: 220))
         recorder.finishDraft()
 
         recorder.begin(tool: .pen, at: CGPoint(x: 40, y: 300))
@@ -2770,12 +2962,13 @@ enum FixtureProcessingRunner {
         clearRecorder.clear()
         let clearPassed = clearRecorder.visibleStrokes.isEmpty && clearRecorder.stop().isEmpty
 
-        let shapePointCountsPassed = strokes.count == 3
+        let shapePointCountsPassed = strokes.count == 4
             && strokes[0].sourcePoints.count == 2
             && strokes[1].sourcePoints.count == 2
-            && strokes[2].sourcePoints.count >= 3
+            && strokes[2].sourcePoints.count == 2
+            && strokes[3].sourcePoints.count >= 3
         let durationsPassed = strokes.allSatisfy { $0.duration >= 0.2 }
-        let passed = tools == ["rectangle", "arrow", "pen"]
+        let passed = tools == ["rectangle", "line", "ellipse", "pen"]
             && pausedInputIgnored
             && stopClearedDraft
             && clearPassed

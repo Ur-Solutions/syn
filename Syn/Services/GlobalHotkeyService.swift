@@ -21,16 +21,27 @@ final class GlobalHotkeyService {
 
     static let pickerDescription = "Left Shift + Right Shift + R"
     static let repeatDescription = "Left Shift + Right Shift"
+    static let canvasDescription = "Right Shift + C"
+    static let canvasClearDescription = "Right Shift + D, D"
     static let accessibilityRequiredStatus: OSStatus = -25211
     static let eventTapCreationFailedStatus: OSStatus = -25212
     static let eventTapSourceFailedStatus: OSStatus = -25213
 
     var onOpenPicker: (() -> Void)?
     var onRepeatLastCapture: (() -> Void)?
+    var onToggleCanvasMode: (() -> Void)?
+    var onSelectCanvasTool: ((AnnotationTool) -> Void)?
+    var onClearCanvas: (() -> Void)?
 
     private let leftShiftKeyCode = CGKeyCode(56)
     private let rightShiftKeyCode = CGKeyCode(60)
     private let rKeyCode = CGKeyCode(15)
+    private let cKeyCode = CGKeyCode(8)
+    private let dKeyCode = CGKeyCode(2)
+    private let oneKeyCode = CGKeyCode(18)
+    private let twoKeyCode = CGKeyCode(19)
+    private let threeKeyCode = CGKeyCode(20)
+    private let fourKeyCode = CGKeyCode(21)
     private let leftShiftEventFlagMask = UInt64(NX_DEVICELSHIFTKEYMASK)
     private let rightShiftEventFlagMask = UInt64(NX_DEVICERSHIFTKEYMASK)
     private let chordRPollInterval: TimeInterval = 0.001
@@ -38,6 +49,7 @@ final class GlobalHotkeyService {
     private let repeatDispatchDelay: TimeInterval = 0.85
     private let repeatInputDrainDelay: TimeInterval = 0.35
     private let repeatDeadlineSettleNanoseconds: UInt64 = 150_000_000
+    private let canvasClearDoubleTapWindow: TimeInterval = 0.75
     private let resolutionQueue = DispatchQueue(label: "com.trmd.syn.global-hotkey-resolution")
     private let resolutionQueueKey = DispatchSpecificKey<Void>()
     private let lifecycleLock = NSLock()
@@ -53,6 +65,8 @@ final class GlobalHotkeyService {
     private var isLeftShiftDown = false
     private var isRightShiftDown = false
     private var isRDown = false
+    private var isCDown = false
+    private var isDDown = false
     private var shiftChordArmed = false
     private var shiftChordBeganAtNanoseconds: UInt64?
     private var chordTriggered = false
@@ -65,6 +79,7 @@ final class GlobalHotkeyService {
     private var pendingRepeatGeneration = 0
     private var pendingRepeatDidDrainInput = false
     private var physicalRKeyStateOverride: Bool?
+    private var lastCanvasDKeyDownAtNanoseconds: UInt64?
     private var lastKeyEventUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
 
     private var storedRegistrationSnapshot = GlobalHotkeyRegistrationSnapshot(
@@ -471,6 +486,13 @@ final class GlobalHotkeyService {
         let isNonShiftKeyDown = type == .keyDown
             && !isShiftKey
 
+        if keyCode == dKeyCode, type == .keyUp {
+            isDDown = false
+        }
+        if keyCode == cKeyCode, type == .keyUp {
+            isCDown = false
+        }
+
         let shouldSamplePhysicalR = pendingRepeatWorkItem != nil
             || shiftChordArmed
             || bothShiftsDown
@@ -489,6 +511,16 @@ final class GlobalHotkeyService {
         isLeftShiftDown = leftShift
         isRightShiftDown = rightShift
         isRDown = resolvedR
+
+        if handleCanvasShortcutIfNeeded(
+            keyCode: keyCode,
+            type: type,
+            leftShift: leftShift,
+            rightShift: rightShift,
+            now: now
+        ) {
+            return
+        }
 
         if pendingRepeatWorkItem != nil, type == .flagsChanged, isShiftKey, anyShiftDown {
             cancelPendingRepeat()
@@ -554,6 +586,76 @@ final class GlobalHotkeyService {
                 rKeyParticipatedInChord = false
             }
         }
+    }
+
+    private func handleCanvasShortcutIfNeeded(
+        keyCode: CGKeyCode?,
+        type: CGEventType?,
+        leftShift: Bool,
+        rightShift: Bool,
+        now: UInt64
+    ) -> Bool {
+        guard type == .keyDown,
+              rightShift,
+              !leftShift,
+              let keyCode else {
+            return false
+        }
+
+        switch keyCode {
+        case cKeyCode:
+            guard !isCDown else {
+                return true
+            }
+            isCDown = true
+            cancelPendingRepeat()
+            resetChordResolutionState()
+            NSLog("Syn global shortcut pressed: \(Self.canvasDescription)")
+            recordDebugEvent("action canvas-toggle")
+            onToggleCanvasMode?()
+            return true
+        case oneKeyCode:
+            triggerCanvasToolShortcut(.pen)
+            return true
+        case twoKeyCode:
+            triggerCanvasToolShortcut(.line)
+            return true
+        case threeKeyCode:
+            triggerCanvasToolShortcut(.rectangle)
+            return true
+        case fourKeyCode:
+            triggerCanvasToolShortcut(.ellipse)
+            return true
+        case dKeyCode:
+            guard !isDDown else {
+                return true
+            }
+            isDDown = true
+            if let last = lastCanvasDKeyDownAtNanoseconds,
+               now >= last,
+               TimeInterval(now - last) / 1_000_000_000 <= canvasClearDoubleTapWindow {
+                lastCanvasDKeyDownAtNanoseconds = nil
+                cancelPendingRepeat()
+                resetChordResolutionState()
+                NSLog("Syn global shortcut pressed: \(Self.canvasClearDescription)")
+                recordDebugEvent("action canvas-clear")
+                onClearCanvas?()
+            } else {
+                lastCanvasDKeyDownAtNanoseconds = now
+                recordDebugEvent("pending canvas-clear")
+            }
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func triggerCanvasToolShortcut(_ tool: AnnotationTool) {
+        cancelPendingRepeat()
+        resetChordResolutionState()
+        NSLog("Syn global shortcut pressed: Right Shift + \(tool.shortcutLabel ?? tool.title)")
+        recordDebugEvent("action canvas-tool-\(tool.rawValue)")
+        onSelectCanvasTool?(tool)
     }
 
     private func triggerPickerShortcut() {
@@ -738,6 +840,9 @@ final class GlobalHotkeyService {
         isLeftShiftDown = false
         isRightShiftDown = false
         isRDown = false
+        isCDown = false
+        isDDown = false
+        lastCanvasDKeyDownAtNanoseconds = nil
         resetChordResolutionState()
     }
 

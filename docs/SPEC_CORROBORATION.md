@@ -181,7 +181,7 @@ This document records the specification decisions made before implementation. Ea
 ## Post-MVP / Broader-Spec Ideas
 
 - Automatic partitioning of the video into useful semantic segments: implemented as transcript/visual-change/OCR based frame planning plus packet artifacts `semantic-segments.json` and `semantic-timeline.md`, both referenced from `manifest.json`, the default zip, and `agent-prompt.md`.
-- Drawing on screen with rectangles, arrows, and pen strokes: implemented and verified.
+- Drawing on screen with pen, line, rectangle, and ellipse strokes: implemented and verified.
 - Draggable region refinement: implemented and verified.
 - Smart Region that follows the user/cursor: implemented and verified as a cursor-following crop from a full-display raw recording.
 - Simple video editing after creation: implemented as a non-destructive trim tool that writes `recording-edited.mp4` next to `recording.mp4` and records the edited output path in `manifest.json`.

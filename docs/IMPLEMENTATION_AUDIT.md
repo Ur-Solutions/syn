@@ -22,7 +22,7 @@ Latest broad verifier:
 - Capture picker photograb: `build/ui-captures/syn-capture-picker-smart-region-verified-2026-06-04.png`
 - Compact zip action photograb: `build/ui-captures/syn-compact-zip-action-2026-06-04.png`
 - Video edit panel photograb: `build/ui-captures/syn-video-edit-panel-final-2026-06-04.png`
-- Annotation HUD photograb: `build/ui-captures/syn-recording-hud-annotations-current-2026-06-04.png`
+- Canvas toolbar photograb: `build/ui-captures/syn-canvas-toolbar-20260605.png`
 - Project context Settings photograb: `build/ui-captures/syn-settings-project-context-2026-06-04.png`
 
 The broad verifier covers packet artifact generation, bundled Whisper transcription, local Vision OCR metadata, OpenAI frame planning with OCR text, semantic timeline/segment artifact generation, Claude Opus summary generation with OCR frame metadata, final processed video, click bubble rendering, drawing/annotation metadata capture, annotation burn-in rendering, annotation manifest and agent-prompt metadata, pointer metadata, selected/compressed frames, candidate-frame metadata, default zip excluding raw sources, optional raw-inclusive zip creation, compact agent-facing zip creation, non-destructive video trimming, local project context snapshot generation, multiple agent prompt profiles, partial failure packet creation, retry, pause/resume segment merging, active-window padded rendering, Smart Region cursor-following crop rendering, synthetic all-screens compositing, Chrome tab parsing/metadata, history actions, Keychain fixture behavior, permission-status reporting, seven-mode capture picker contract, and hotkey disambiguation.
@@ -33,14 +33,14 @@ Latest annotation verifier:
   - `build/DerivedData/Build/Products/Debug/Syn.app/Contents/MacOS/Syn --syn-annotation-recorder-fixture`
   - `build/DerivedData/Build/Products/Debug/Syn.app/Contents/MacOS/Syn --syn-annotation-render-fixture <fixture.mp4>`
   - `./script/smoke_packet_fixture.sh`
-  - `SYN_UI_SHOW_HUD=1 SYN_UI_WINDOW_TITLE="Syn Recording" ./script/capture_syn_ui.sh build/ui-captures/syn-recording-hud-annotations-current-2026-06-04.png`
+  - `SYN_UI_SHOW_CANVAS_TOOLBAR=1 ./script/capture_syn_ui.sh build/ui-captures/syn-canvas-toolbar-20260605.png`
 - Result: all passed
 - Evidence:
-  - `SYN_ANNOTATION_RECORDER_FIXTURE=passed`, `SYN_ANNOTATION_RECORDER_TOOLS=rectangle,arrow,pen`, `SYN_ANNOTATION_RECORDER_PAUSED_IGNORED=yes`, and `SYN_ANNOTATION_RECORDER_CLEAR=passed`.
-  - `SYN_ANNOTATION_RENDER_FIXTURE=passed`, `SYN_ANNOTATION_RENDERED_COUNT=3`, `SYN_ANNOTATION_MAPPED_COUNT=3`, and `SYN_ANNOTATION_COLOR_PIXELS=16471`.
-  - Latest smoke packet `build/fixture-packets/fixture-1780546761-C9D2CD4B-50B6-4F6C-816E-E3F5AF8547A1` has `annotationCount=3`, `annotationMapping.mappedStrokeCount=3`, `annotationMapping.renderedStrokeCount=3`, and `raw/annotations.json` with rectangle, arrow, and pen strokes mapped to final video coordinates.
-  - `agent-prompt.md` includes `raw/annotations.json` and `Annotations: 3 mapped, 0 unmapped, 3 drawn overlays rendered`.
-  - `build/ui-captures/syn-recording-hud-annotations-current-2026-06-04.png` shows the HUD controls for pen, rectangle, arrow, clear, pause, and stop. Its status sidecar reports Microphone, Screen Recording, and Accessibility all granted.
+  - `SYN_ANNOTATION_RECORDER_FIXTURE=passed`, `SYN_ANNOTATION_RECORDER_TOOLS=rectangle,line,ellipse,pen`, `SYN_ANNOTATION_RECORDER_PAUSED_IGNORED=yes`, and `SYN_ANNOTATION_RECORDER_CLEAR=passed`.
+  - `SYN_ANNOTATION_RENDER_FIXTURE=passed` verifies line, ellipse, pen, rectangle, and legacy arrow burn-in rendering.
+  - The smoke packet verifier expects `annotationCount=4`, `annotationMapping.mappedStrokeCount=4`, `annotationMapping.renderedStrokeCount=4`, and `raw/annotations.json` with rectangle, line, ellipse, and pen strokes mapped to final video coordinates.
+  - `agent-prompt.md` includes `raw/annotations.json` and the annotation mapping summary.
+  - `build/ui-captures/syn-canvas-toolbar-20260605.png` shows the Canvas Mode toolbar with pen, line, rectangle, ellipse, delete, clear, and exit controls. Its status sidecar reports Microphone, Screen Recording, and Accessibility all granted.
 
 Latest Chrome tab verifier:
 
@@ -199,7 +199,7 @@ Latest draggable region verifier:
 | Pointer/click metadata stored with source and video coordinates | Implemented | `PointerEventRecorder`, `PointerEvent`, `manifest.pointerMapping`; smoke verifies mapped pointer events and raw `pointer-events.json`. |
 | Microphone-only recording; no system/app audio | Implemented | `ScreenCaptureRecorder`; capture configuration fixture verifies mic enabled, system audio disabled, current-process audio excluded. |
 | HUD with timer, mic level, pause/resume, stop | Implemented | `RecordingHUDView`; HUD photograbs; pause/resume fixtures. |
-| Drawing/annotation overlay with rectangles, arrows, and pen strokes | Implemented | `AnnotationOverlayController`, `AnnotationRecorder`, `AnnotationModels`, HUD tool controls; `--syn-annotation-recorder-fixture`, `--syn-annotation-render-fixture`, smoke annotation manifest/prompt assertions, and HUD photograb `build/ui-captures/syn-recording-hud-annotations-current-2026-06-04.png`. |
+| Drawing/annotation overlay with pen, line, rectangle, and ellipse strokes | Implemented | `AnnotationOverlayController`, `AnnotationRecorder`, `AnnotationModels`, Canvas Mode toolbar controls; `--syn-annotation-recorder-fixture`, `--syn-annotation-render-fixture`, smoke annotation manifest/prompt assertions, and toolbar photograb `build/ui-captures/syn-canvas-toolbar-20260605.png`. |
 | Pause omits video/mic from final timeline and stores intervals | Implemented | paused packet fixture verifies final duration and `manifest.pauses`. |
 | Warn at 30 minutes, no hard limit | Implemented | `RecordingDurationWarning`; `--syn-duration-warning-fixture`. |
 | 30 FPS H.264 MP4 with AAC audio | Implemented | smoke uses `ffprobe` on processed, raw, paused, and retried recordings. |

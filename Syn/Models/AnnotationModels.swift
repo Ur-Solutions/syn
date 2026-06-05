@@ -2,17 +2,25 @@ import Foundation
 
 enum AnnotationTool: String, Codable, Sendable, CaseIterable, Identifiable {
     case pen
+    case line
     case rectangle
+    case ellipse
     case arrow
 
     var id: String { rawValue }
+
+    static let canvasTools: [AnnotationTool] = [.pen, .line, .rectangle, .ellipse]
 
     var title: String {
         switch self {
         case .pen:
             "Pen"
+        case .line:
+            "Line"
         case .rectangle:
             "Rectangle"
+        case .ellipse:
+            "Ellipse"
         case .arrow:
             "Arrow"
         }
@@ -22,10 +30,29 @@ enum AnnotationTool: String, Codable, Sendable, CaseIterable, Identifiable {
         switch self {
         case .pen:
             "pencil"
+        case .line:
+            "line.diagonal"
         case .rectangle:
             "rectangle"
+        case .ellipse:
+            "circle"
         case .arrow:
             "arrow.up.right"
+        }
+    }
+
+    var shortcutLabel: String? {
+        switch self {
+        case .pen:
+            "1"
+        case .line:
+            "2"
+        case .rectangle:
+            "3"
+        case .ellipse:
+            "4"
+        case .arrow:
+            nil
         }
     }
 }

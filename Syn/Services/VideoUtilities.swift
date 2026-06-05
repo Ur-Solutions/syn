@@ -617,10 +617,24 @@ enum VideoUtilities {
         case .pen:
             path.move(to: points[0])
             points.dropFirst().forEach { path.addLine(to: $0) }
+        case .line:
+            let start = points[0]
+            let end = points[points.count - 1]
+            path.move(to: start)
+            path.addLine(to: end)
         case .rectangle:
             let start = points[0]
             let end = points[points.count - 1]
             path.addRect(CGRect(
+                x: min(start.x, end.x),
+                y: min(start.y, end.y),
+                width: abs(end.x - start.x),
+                height: abs(end.y - start.y)
+            ))
+        case .ellipse:
+            let start = points[0]
+            let end = points[points.count - 1]
+            path.addEllipse(in: CGRect(
                 x: min(start.x, end.x),
                 y: min(start.y, end.y),
                 width: abs(end.x - start.x),

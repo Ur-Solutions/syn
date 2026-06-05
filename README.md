@@ -126,13 +126,13 @@ SYN_HOTKEY_SEQUENCE=long-held-r ./script/live_hotkey_recording_fixture.sh picker
 
 The recording fixture logs which shortcut action won, captures the floating HUD under `build/ui-captures/`, records a temporary selected window through the staged signed app, and stops after raw local capture. Add `--process` only when the captured contents are safe to send through the configured AI providers.
 
-To photograb the recording HUD and annotation controls directly:
+To photograb the recording HUD and canvas toolbar directly:
 
 ```bash
-SYN_UI_SHOW_HUD=1 SYN_UI_WINDOW_TITLE="Syn Recording" ./script/capture_syn_ui.sh build/ui-captures/syn-recording-hud-annotations-current-2026-06-04.png
+SYN_UI_SHOW_CANVAS_TOOLBAR=1 ./script/capture_syn_ui.sh build/ui-captures/syn-canvas-toolbar-current.png
 ```
 
-The HUD includes pen, rectangle, arrow, clear, pause/resume, discard, and stop controls. The discard (trash) control is a two-step confirm: the first click arms it (the icon turns red), and a second click within a few seconds discards the in-progress recording without producing a packet. The smoke fixture verifies rectangle, arrow, and pen metadata plus burned-in annotation overlays in `recording.mp4`.
+The HUD includes a Canvas Mode toggle. Canvas Mode opens a draggable toolbar below the HUD with pen, line, rectangle, ellipse, delete selected, clear, and exit controls. The discard (trash) control is a two-step confirm: the first click arms it (the icon turns red), and a second click within a few seconds discards the in-progress recording without producing a packet. The smoke fixture verifies pen, line, rectangle, and ellipse metadata plus burned-in annotation overlays in `recording.mp4`.
 
 To photograb the capture picker directly:
 

@@ -347,7 +347,7 @@ if ! grep -q '^SYN_ANNOTATION_RECORDER_FIXTURE=passed$' "$ANNOTATION_RECORDER_LO
   echo "annotation recorder fixture failed" >&2
   exit 1
 fi
-if ! grep -q '^SYN_ANNOTATION_RECORDER_TOOLS=rectangle,arrow,pen$' "$ANNOTATION_RECORDER_LOG"; then
+if ! grep -q '^SYN_ANNOTATION_RECORDER_TOOLS=rectangle,line,ellipse,pen$' "$ANNOTATION_RECORDER_LOG"; then
   echo "annotation recorder fixture did not capture the expected tools" >&2
   exit 1
 fi
@@ -533,11 +533,11 @@ if not pointer_events or not any(event.get("videoCoordinates") for event in poin
     errors.append("pointer events were not mapped into video coordinates")
 if not any(event.get("kind") == "leftMouseDown" for event in pointer_events):
     errors.append("click metadata was not preserved")
-if manifest.get("annotationCount") != 3:
+if manifest.get("annotationCount") != 4:
     errors.append(f"manifest annotation count is wrong: {manifest.get('annotationCount')}")
-if len(annotations) != 3:
+if len(annotations) != 4:
     errors.append(f"raw annotation metadata count is wrong: {len(annotations)}")
-if {annotation.get("tool") for annotation in annotations} != {"rectangle", "arrow", "pen"}:
+if {annotation.get("tool") for annotation in annotations} != {"rectangle", "line", "ellipse", "pen"}:
     errors.append(f"raw annotation tools are wrong: {[annotation.get('tool') for annotation in annotations]}")
 if not all(annotation.get("videoPoints") for annotation in annotations):
     errors.append("annotation strokes were not mapped into video coordinates")
@@ -546,9 +546,9 @@ annotation_mapping = manifest.get("annotationMapping")
 if not annotation_mapping:
     errors.append("manifest is missing annotation mapping metadata")
 else:
-    if annotation_mapping.get("mappedStrokeCount") != 3:
+    if annotation_mapping.get("mappedStrokeCount") != 4:
         errors.append(f"annotation mapping mapped count is wrong: {annotation_mapping.get('mappedStrokeCount')}")
-    if annotation_mapping.get("renderedStrokeCount") != 3:
+    if annotation_mapping.get("renderedStrokeCount") != 4:
         errors.append(f"annotation mapping rendered count is wrong: {annotation_mapping.get('renderedStrokeCount')}")
     if annotation_mapping.get("videoCoordinateSpace") != "final recording pixels with origin at top-left":
         errors.append("annotation mapping video coordinate space is wrong")

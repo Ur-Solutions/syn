@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="Syn"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STAGED_APP_BUNDLE="${STAGED_APP_BUNDLE:-$HOME/Applications/$APP_NAME.app}"
+STAGED_APP_BUNDLE="${STAGED_APP_BUNDLE:-/Applications/$APP_NAME.app}"
 OUTPUT_PATH="${1:-}"
 STATUS_PATH="${SYN_UI_STATUS_PATH:-}"
 WINDOW_TITLE="${SYN_UI_WINDOW_TITLE:-}"
@@ -13,6 +13,9 @@ if [[ -z "$WINDOW_TITLE" && "${SYN_UI_SHOW_REGION_SELECTOR:-0}" == "1" ]]; then
 fi
 if [[ -z "$WINDOW_TITLE" && "${SYN_UI_SHOW_WINDOW_SELECTOR:-0}" == "1" ]]; then
   WINDOW_TITLE="Syn Window Selection Target"
+fi
+if [[ -z "$WINDOW_TITLE" && "${SYN_UI_SHOW_CANVAS_TOOLBAR:-0}" == "1" ]]; then
+  WINDOW_TITLE="Syn Canvas"
 fi
 
 if [[ ! -d "$STAGED_APP_BUNDLE" ]]; then
@@ -44,6 +47,8 @@ if [[ "${SYN_UI_SHOW_SETTINGS:-0}" == "1" ]]; then
   launch_args+=(--syn-show-settings-window)
 elif [[ "${SYN_UI_SHOW_HUD:-0}" == "1" ]]; then
   launch_args+=(--syn-show-main-window --syn-show-recording-hud-fixture)
+elif [[ "${SYN_UI_SHOW_CANVAS_TOOLBAR:-0}" == "1" ]]; then
+  launch_args+=(--syn-show-main-window --syn-show-recording-hud-fixture --syn-show-canvas-toolbar-fixture)
 elif [[ "${SYN_UI_SHOW_PROCESSING_HUD:-0}" == "1" ]]; then
   launch_args+=(--syn-show-main-window --syn-show-processing-hud-fixture)
 elif [[ "${SYN_UI_SHOW_COMPLETION_HUD:-0}" == "1" ]]; then

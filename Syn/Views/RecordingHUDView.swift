@@ -72,38 +72,25 @@ struct RecordingHUDView: View {
             Divider()
                 .frame(height: 24)
 
-            ForEach(AnnotationTool.allCases) { tool in
-                Button {
-                    appState.toggleAnnotationTool(tool)
-                } label: {
-                    Image(systemName: tool.symbolName)
-                        .frame(width: 16, height: 16)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(appState.selectedAnnotationTool == tool ? .accentColor : nil)
-                .disabled(isProcessing)
-                .help(tool.title)
-            }
-
             Button {
-                appState.clearAnnotations()
+                appState.toggleCanvasMode()
             } label: {
-                Image(systemName: "eraser")
+                Image(systemName: appState.isCanvasModeEnabled ? "paintpalette.fill" : "paintpalette")
                     .frame(width: 16, height: 16)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(isProcessing)
-            .help("Clear annotations")
+            .tint(appState.isCanvasModeEnabled ? .accentColor : nil)
+            .disabled(isProcessing || appState.activeRecording?.phase != .recording)
+            .help("Canvas Mode")
 
             Button {
                 appState.pauseOrResumeRecording()
             } label: {
-            Image(systemName: appState.activeRecording?.isPaused == true ? "play.fill" : "pause.fill")
-        }
-        .disabled(isProcessing)
-        .help(appState.activeRecording?.isPaused == true ? "Resume" : "Pause")
+                Image(systemName: appState.activeRecording?.isPaused == true ? "play.fill" : "pause.fill")
+            }
+            .disabled(isProcessing)
+            .help(appState.activeRecording?.isPaused == true ? "Resume" : "Pause")
 
             Button(role: .destructive) {
                 if isDiscardArmed {
@@ -135,10 +122,10 @@ struct RecordingHUDView: View {
             Button(role: .destructive) {
                 appState.stopRecording()
             } label: {
-            Image(systemName: "stop.fill")
-        }
-        .disabled(isProcessing)
-        .help("Stop")
+                Image(systemName: "stop.fill")
+            }
+            .disabled(isProcessing)
+            .help("Stop")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -242,6 +229,10 @@ final class RecordingHUDController {
 
     private init() {}
 
+    var currentFrame: NSRect? {
+        panel?.frame
+    }
+
     func show(appState: AppState) {
         self.appState = appState
 
@@ -288,6 +279,155 @@ final class RecordingHUDController {
         let origin = NSPoint(
             x: visibleFrame.midX - size.width / 2,
             y: visibleFrame.maxY - size.height - 24
+        )
+        panel.setFrameOrigin(origin)
+    }
+}
+
+private struct CanvasToolbarView: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+                .help("Drag canvas toolbar")
+
+            ForEach(AnnotationTool.canvasTools) { tool in
+                Button {
+                    appState.selectCanvasTool(tool)
+                } label: {
+                    Image(systemName: tool.symbolName)
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(appState.selectedAnnotationTool == tool ? .accentColor : nil)
+                .help(toolHelp(tool))
+            }
+
+            Divider()
+                .frame(height: 22)
+
+            Button {
+                appState.deleteSelectedAnnotation()
+            } label: {
+                Image(systemName: "trash")
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(appState.selectedAnnotationStrokeID == nil)
+            .help("Delete selected annotation")
+
+            Button {
+                appState.clearAnnotations()
+            } label: {
+                Image(systemName: "eraser")
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(appState.visibleAnnotationStrokes.isEmpty)
+            .help("Clear canvas")
+
+            Button {
+                appState.setCanvasMode(false)
+            } label: {
+                Image(systemName: "xmark")
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Exit canvas mode")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func toolHelp(_ tool: AnnotationTool) -> String {
+        if let shortcut = tool.shortcutLabel {
+            return "\(tool.title) (Right Shift + \(shortcut))"
+        }
+        return tool.title
+    }
+}
+
+@MainActor
+final class CanvasToolbarController {
+    static let shared = CanvasToolbarController()
+
+    private var panel: NSPanel?
+    private weak var appState: AppState?
+
+    private init() {}
+
+    func show(appState: AppState) {
+        self.appState = appState
+
+        if panel == nil {
+            let hostingView = NSHostingView(rootView: CanvasToolbarView().environmentObject(appState))
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 330, height: 56),
+                styleMask: [.nonactivatingPanel, .hudWindow],
+                backing: .buffered,
+                defer: false
+            )
+            panel.contentView = hostingView
+            panel.level = .floating
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            panel.isMovableByWindowBackground = true
+            panel.title = "Syn Canvas"
+            self.panel = panel
+            positionPanelBelowRecordingHUD()
+        }
+
+        panel?.orderFrontRegardless()
+    }
+
+    func update(appState: AppState) {
+        guard panel != nil else {
+            if appState.isCanvasModeEnabled {
+                show(appState: appState)
+            }
+            return
+        }
+        self.appState = appState
+        panel?.orderFrontRegardless()
+    }
+
+    func hide() {
+        panel?.orderOut(nil)
+    }
+
+    func close() {
+        panel?.close()
+        panel = nil
+    }
+
+    private func positionPanelBelowRecordingHUD() {
+        guard let panel else { return }
+        let size = panel.frame.size
+        if let hudFrame = RecordingHUDController.shared.currentFrame {
+            let origin = NSPoint(
+                x: hudFrame.midX - size.width / 2,
+                y: hudFrame.minY - size.height - 8
+            )
+            panel.setFrameOrigin(origin)
+            return
+        }
+
+        let screen = NSScreen.main ?? NSScreen.screens.first
+        guard let visibleFrame = screen?.visibleFrame else { return }
+
+        let recordingHUDHeight: CGFloat = 72
+        let origin = NSPoint(
+            x: visibleFrame.midX - size.width / 2,
+            y: visibleFrame.maxY - recordingHUDHeight - size.height - 34
         )
         panel.setFrameOrigin(origin)
     }

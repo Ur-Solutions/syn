@@ -149,7 +149,7 @@ Expected:
 - [ ] Text is readable and not overlapping.
 - [ ] Processing HUD says `Processing`.
 - [ ] Processing HUD timer is frozen in the fixture.
-- [ ] Processing HUD pause/stop/annotation controls are disabled.
+- [ ] Processing HUD pause/stop/canvas controls are disabled.
 - [ ] Overview processing banner also disables Pause and Stop.
 
 ## Global Shortcuts
@@ -389,9 +389,12 @@ Expected:
 ## Annotation Controls
 
 - [ ] Start a short recording.
-- [ ] Use rectangle annotation.
-- [ ] Use arrow annotation.
+- [ ] Toggle Canvas Mode.
 - [ ] Use pen annotation.
+- [ ] Use line annotation.
+- [ ] Use rectangle annotation.
+- [ ] Use ellipse annotation.
+- [ ] Select an annotation and delete it.
 - [ ] Clear annotations.
 - [ ] Draw again after clearing.
 - [ ] Pause, try drawing, resume.

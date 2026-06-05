@@ -28,7 +28,9 @@ final class AppState: ObservableObject {
     @Published var isLoadingChromeTabs = false
     @Published var chromeTabSelectionError: String?
     @Published var defaultPromptProfile: AgentPromptProfile = .generalCoding
+    @Published var isCanvasModeEnabled = false
     @Published var selectedAnnotationTool: AnnotationTool?
+    @Published var selectedAnnotationStrokeID: UUID?
     @Published var visibleAnnotationStrokes: [AnnotationStroke] = []
     @Published var videoEditInProgressPacketID: UUID?
     @Published var projectContextFolderPath: String?
@@ -156,6 +158,21 @@ final class AppState: ObservableObject {
                 }
             }
         }
+        GlobalHotkeyService.shared.onToggleCanvasMode = { [weak self] in
+            Task { @MainActor in
+                self?.toggleCanvasMode()
+            }
+        }
+        GlobalHotkeyService.shared.onSelectCanvasTool = { [weak self] tool in
+            Task { @MainActor in
+                self?.selectCanvasTool(tool)
+            }
+        }
+        GlobalHotkeyService.shared.onClearCanvas = { [weak self] in
+            Task { @MainActor in
+                self?.clearAnnotations()
+            }
+        }
         preferredPickerHotkey = GlobalHotkeyService.pickerDescription
         preferredRepeatHotkey = GlobalHotkeyService.repeatDescription
 
@@ -186,6 +203,9 @@ final class AppState: ObservableObject {
             } else if ProcessInfo.processInfo.arguments.contains("--syn-show-recording-hud-fixture") {
                 showMainWindow()
                 showRecordingHUDFixture()
+                if ProcessInfo.processInfo.arguments.contains("--syn-show-canvas-toolbar-fixture") {
+                    showCanvasToolbarFixture()
+                }
             } else if ProcessInfo.processInfo.arguments.contains("--syn-show-processing-hud-fixture") {
                 showMainWindow()
                 showProcessingHUDFixture()
@@ -335,6 +355,31 @@ final class AppState: ObservableObject {
         micLevel = 0.82
         isMicMeterActive = true
         RecordingHUDController.shared.show(appState: self)
+    }
+
+    private func showCanvasToolbarFixture() {
+        if activeRecording?.phase != .recording {
+            showRecordingHUDFixture()
+        }
+        isCanvasModeEnabled = true
+        selectedAnnotationTool = .pen
+        visibleAnnotationStrokes = [
+            AnnotationStroke(
+                id: UUID(),
+                tool: .rectangle,
+                startTimestamp: 0,
+                endTimestamp: 1,
+                sourcePoints: [
+                    CodablePoint(x: 160, y: 160),
+                    CodablePoint(x: 360, y: 260)
+                ],
+                videoPoints: nil,
+                colorHex: "#0A84FF",
+                lineWidth: 5
+            )
+        ]
+        CanvasToolbarController.shared.show(appState: self)
+        AnnotationOverlayController.shared.update(appState: self)
     }
 
     private func showProcessingHUDFixture() {
@@ -841,21 +886,86 @@ final class AppState: ObservableObject {
         statusMessage = "Project context set."
     }
 
-    func toggleAnnotationTool(_ tool: AnnotationTool) {
-        selectedAnnotationTool = selectedAnnotationTool == tool ? nil : tool
+    func toggleCanvasMode() {
+        guard activeRecording?.phase == .recording else {
+            statusMessage = "Canvas is available while recording."
+            return
+        }
+        setCanvasMode(!isCanvasModeEnabled, playFeedback: !isCanvasModeEnabled)
+    }
+
+    func setCanvasMode(_ enabled: Bool, playFeedback: Bool = false) {
+        guard activeRecording?.phase == .recording || !enabled else {
+            statusMessage = "Canvas is available while recording."
+            return
+        }
+
+        isCanvasModeEnabled = enabled
+        if enabled {
+            selectedAnnotationTool = selectedAnnotationTool ?? .pen
+            CanvasToolbarController.shared.show(appState: self)
+            AnnotationOverlayController.shared.update(appState: self)
+            statusMessage = "Canvas mode on."
+            if playFeedback {
+                playCanvasFeedbackSound()
+            }
+        } else {
+            selectedAnnotationTool = nil
+            selectedAnnotationStrokeID = nil
+            CanvasToolbarController.shared.hide()
+            updateAnnotationOverlayVisibility()
+            statusMessage = "Canvas mode off."
+        }
+    }
+
+    func selectCanvasTool(_ tool: AnnotationTool) {
+        guard AnnotationTool.canvasTools.contains(tool) else { return }
+        guard activeRecording?.phase == .recording else {
+            statusMessage = "Canvas tools are available while recording."
+            return
+        }
+        if !isCanvasModeEnabled {
+            setCanvasMode(true, playFeedback: true)
+        }
+        selectedAnnotationTool = tool
+        selectedAnnotationStrokeID = nil
+        CanvasToolbarController.shared.update(appState: self)
         AnnotationOverlayController.shared.update(appState: self)
+    }
+
+    func toggleAnnotationTool(_ tool: AnnotationTool) {
+        selectCanvasTool(tool)
+    }
+
+    func selectAnnotationStroke(id: UUID?) {
+        selectedAnnotationStrokeID = id
+        CanvasToolbarController.shared.update(appState: self)
+        AnnotationOverlayController.shared.update(appState: self)
+    }
+
+    func deleteSelectedAnnotation() {
+        guard let selectedAnnotationStrokeID else { return }
+        annotationRecorder.deleteStroke(id: selectedAnnotationStrokeID)
+        self.selectedAnnotationStrokeID = nil
+        visibleAnnotationStrokes = annotationRecorder.visibleStrokes
+        CanvasToolbarController.shared.update(appState: self)
+        updateAnnotationOverlayVisibility()
     }
 
     func clearAnnotations() {
         annotationRecorder.clear()
+        selectedAnnotationStrokeID = nil
         visibleAnnotationStrokes = []
-        AnnotationOverlayController.shared.update(appState: self)
+        CanvasToolbarController.shared.update(appState: self)
+        updateAnnotationOverlayVisibility()
     }
 
     func beginAnnotationStroke(tool: AnnotationTool, at point: CGPoint) {
         guard activeRecording?.phase == .recording else { return }
+        selectedAnnotationStrokeID = nil
         annotationRecorder.begin(tool: tool, at: point)
         visibleAnnotationStrokes = annotationRecorder.visibleStrokes
+        CanvasToolbarController.shared.update(appState: self)
         AnnotationOverlayController.shared.update(appState: self)
     }
 
@@ -869,7 +979,31 @@ final class AppState: ObservableObject {
     func endAnnotationStroke() {
         annotationRecorder.finishDraft()
         visibleAnnotationStrokes = annotationRecorder.visibleStrokes
+        CanvasToolbarController.shared.update(appState: self)
         AnnotationOverlayController.shared.update(appState: self)
+    }
+
+    private func updateAnnotationOverlayVisibility() {
+        if isCanvasModeEnabled || !visibleAnnotationStrokes.isEmpty {
+            AnnotationOverlayController.shared.update(appState: self)
+        } else {
+            AnnotationOverlayController.shared.close()
+        }
+    }
+
+    private func playCanvasFeedbackSound() {
+        guard let sound = NSSound(named: "Tink") ?? NSSound(named: "Pop") else { return }
+        sound.volume = 0.18
+        sound.play()
+    }
+
+    private func resetCanvasState(visibleStrokes: [AnnotationStroke] = []) {
+        isCanvasModeEnabled = false
+        selectedAnnotationTool = nil
+        selectedAnnotationStrokeID = nil
+        visibleAnnotationStrokes = visibleStrokes
+        CanvasToolbarController.shared.hide()
+        AnnotationOverlayController.shared.close()
     }
 
     private func updateManifestRawZip(for packet: PacketSummary, rawZipURL: URL) {
@@ -1072,8 +1206,7 @@ final class AppState: ObservableObject {
             try await recorder.start(request: request)
             pointerRecorder.start()
             annotationRecorder.start()
-            selectedAnnotationTool = nil
-            visibleAnnotationStrokes = []
+            resetCanvasState()
             activeWindowTracker.start()
             startMicMeter()
 
@@ -1113,10 +1246,8 @@ final class AppState: ObservableObject {
             stopDurationWarningMonitor()
             stopMicMeter()
             RecordingHUDController.shared.hide()
-            AnnotationOverlayController.shared.close()
             _ = annotationRecorder.stop()
-            selectedAnnotationTool = nil
-            visibleAnnotationStrokes = []
+            resetCanvasState()
             if let failedContext {
                 updatePacketStatus(id: failedContext.id, status: .failed, duration: 0)
             }
@@ -1146,6 +1277,7 @@ final class AppState: ObservableObject {
         }
 
         do {
+            setCanvasMode(false)
             try await recorder.pause()
             pointerRecorder.pause()
             annotationRecorder.pause()
@@ -1224,8 +1356,7 @@ final class AppState: ObservableObject {
             failurePointerEvents = pointerEvents
             let annotations = annotationRecorder.stop()
             failureAnnotations = annotations
-            selectedAnnotationTool = nil
-            visibleAnnotationStrokes = annotations
+            resetCanvasState()
             stopMicMeter()
             let activeWindowSamples = activeWindowTracker.stop()
             failureActiveWindowSamples = activeWindowSamples
@@ -1298,8 +1429,7 @@ final class AppState: ObservableObject {
             stopDurationWarningMonitor()
             rememberSuccessfulCapture(mode: recording.mode)
             statusMessage = "Packet ready ✨ — handoff copied to clipboard; summary and zip are finishing in the background."
-            AnnotationOverlayController.shared.close()
-                if hotkeyRecordingFixture?.process == true {
+            if hotkeyRecordingFixture?.process == true {
                 RecordingHUDController.shared.hide()
                 recordHotkeyRecording("trigger=\(hotkeyRecordingFixture?.trigger.rawValue ?? "")")
                 recordHotkeyRecording("mode=\(recording.mode.rawValue)")
@@ -1386,15 +1516,13 @@ final class AppState: ObservableObject {
             currentCaptureSelectedWindowTarget = nil
             currentChromeTabTarget = nil
             currentCaptureDisplayID = nil
-            selectedAnnotationTool = nil
-            visibleAnnotationStrokes = annotations
+            resetCanvasState()
             selectorRecordingStopTask?.cancel()
             selectorRecordingStopTask = nil
             hotkeyRecordingStopTask?.cancel()
             hotkeyRecordingStopTask = nil
             stopDurationWarningMonitor()
             RecordingHUDController.shared.hide()
-            AnnotationOverlayController.shared.close()
             if selectorRecordingFixtureMode != nil {
                 recordSelectorRecording("mode=\(recording.mode.rawValue)")
                 recordSelectorRecording("status=\(partialPacket?.status.rawValue ?? PacketStatus.failed.rawValue)")
@@ -1438,7 +1566,7 @@ final class AppState: ObservableObject {
 
         // Tear down HUD and annotation overlay.
         RecordingHUDController.shared.hide()
-        AnnotationOverlayController.shared.close()
+        resetCanvasState()
 
         // Remove the pending packet from history and delete its folder on disk.
         recentPackets.removeAll { $0.id == context.id }
@@ -1460,8 +1588,7 @@ final class AppState: ObservableObject {
         currentCaptureSelectedWindowTarget = nil
         currentChromeTabTarget = nil
         currentCaptureDisplayID = nil
-        selectedAnnotationTool = nil
-        visibleAnnotationStrokes = []
+        resetCanvasState()
         statusMessage = "Recording discarded."
     }
 
@@ -1563,6 +1690,7 @@ final class AppState: ObservableObject {
         rememberSuccessfulCapture(mode: recording.mode)
         statusMessage = "Selector recording fixture captured a raw packet."
         RecordingHUDController.shared.hide()
+        resetCanvasState()
         recordSelectorRecording("mode=\(recording.mode.rawValue)")
         recordSelectorRecording("status=\(packet.status.rawValue)")
         recordSelectorRecording("duration=\(String(format: "%.3f", duration))")
@@ -1644,6 +1772,7 @@ final class AppState: ObservableObject {
         rememberSuccessfulCapture(mode: recording.mode)
         statusMessage = "Hotkey recording fixture captured a raw packet."
         RecordingHUDController.shared.hide()
+        resetCanvasState()
         recordHotkeyRecording("trigger=\(hotkeyRecordingFixture?.trigger.rawValue ?? "")")
         recordHotkeyRecording("mode=\(recording.mode.rawValue)")
         recordHotkeyRecording("status=\(packet.status.rawValue)")
