@@ -15,6 +15,7 @@ APP_BUNDLE="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/$APP_NAME.app"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 STAGED_APP_BUNDLE="${STAGED_APP_BUNDLE:-/Applications/$APP_NAME.app}"
 STAGED_APP_BINARY="$STAGED_APP_BUNDLE/Contents/MacOS/$APP_NAME"
+LEGACY_USER_APP_BUNDLE="$HOME/Applications/$APP_NAME.app"
 SIGN_IDENTITY="${SYN_CODE_SIGN_IDENTITY:-}"
 
 usage() {
@@ -62,6 +63,13 @@ stage_app() {
   local lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
   if [[ -x "$lsregister" ]]; then
     "$lsregister" -f "$STAGED_APP_BUNDLE" >/dev/null 2>&1 || true
+  fi
+
+  if [[ "$STAGED_APP_BUNDLE" != "$LEGACY_USER_APP_BUNDLE" && -d "$LEGACY_USER_APP_BUNDLE" ]]; then
+    /usr/bin/rsync -aE --delete "$STAGED_APP_BUNDLE/" "$LEGACY_USER_APP_BUNDLE/"
+    if [[ -x "$lsregister" ]]; then
+      "$lsregister" -f "$LEGACY_USER_APP_BUNDLE" >/dev/null 2>&1 || true
+    fi
   fi
 }
 

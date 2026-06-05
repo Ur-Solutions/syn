@@ -150,6 +150,7 @@ final class AnnotationOverlayController {
                 window.setFrame(screen.frame, display: true)
                 window.annotationView.screenFrame = screen.frame
                 window.annotationView.appState = appState
+                window.ignoresMouseEvents = !appState.isCanvasModeEnabled
             }
             return
         }
@@ -174,6 +175,7 @@ final class AnnotationOverlayController {
             window.backgroundColor = .clear
             window.isOpaque = false
             window.hasShadow = false
+            window.acceptsMouseMovedEvents = true
             window.ignoresMouseEvents = !appState.isCanvasModeEnabled
             window.title = "Syn Annotation Overlay"
             return window
@@ -185,7 +187,7 @@ final class AnnotationOverlayWindow: NSPanel {
     weak var annotationView: AnnotationOverlayView!
     var screenFrame: CGRect = .zero
 
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
     override func sendEvent(_ event: NSEvent) {

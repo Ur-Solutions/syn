@@ -903,8 +903,8 @@ final class AppState: ObservableObject {
         isCanvasModeEnabled = enabled
         if enabled {
             selectedAnnotationTool = selectedAnnotationTool ?? .pen
-            CanvasToolbarController.shared.show(appState: self)
             AnnotationOverlayController.shared.update(appState: self)
+            CanvasToolbarController.shared.show(appState: self)
             statusMessage = "Canvas mode on."
             if playFeedback {
                 playCanvasFeedbackSound()
@@ -929,8 +929,8 @@ final class AppState: ObservableObject {
         }
         selectedAnnotationTool = tool
         selectedAnnotationStrokeID = nil
-        CanvasToolbarController.shared.update(appState: self)
         AnnotationOverlayController.shared.update(appState: self)
+        CanvasToolbarController.shared.update(appState: self)
     }
 
     func toggleAnnotationTool(_ tool: AnnotationTool) {

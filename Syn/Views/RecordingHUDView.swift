@@ -369,14 +369,14 @@ final class CanvasToolbarController {
 
         if panel == nil {
             let hostingView = NSHostingView(rootView: CanvasToolbarView().environmentObject(appState))
-            let panel = NSPanel(
+            let panel = CanvasToolbarPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 330, height: 56),
                 styleMask: [.nonactivatingPanel, .hudWindow],
                 backing: .buffered,
                 defer: false
             )
             panel.contentView = hostingView
-            panel.level = .floating
+            panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             panel.hidesOnDeactivate = false
             panel.isReleasedWhenClosed = false
@@ -431,4 +431,9 @@ final class CanvasToolbarController {
         )
         panel.setFrameOrigin(origin)
     }
+}
+
+private final class CanvasToolbarPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
 }
