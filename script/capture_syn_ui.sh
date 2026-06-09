@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="Syn"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STAGED_APP_BUNDLE="${STAGED_APP_BUNDLE:-/Applications/$APP_NAME.app}"
+STAGED_APP_BUNDLE="${STAGED_APP_BUNDLE:-$HOME/Applications/$APP_NAME.app}"
 OUTPUT_PATH="${1:-}"
 STATUS_PATH="${SYN_UI_STATUS_PATH:-}"
 WINDOW_TITLE="${SYN_UI_WINDOW_TITLE:-}"

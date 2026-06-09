@@ -10,7 +10,7 @@ The current repository contains the macOS app implementation, verification scrip
 ./script/build_and_run.sh
 ```
 
-The script stages and launches the app at `/Applications/Syn.app` so macOS privacy permissions attach to a stable app bundle. Override the location with `STAGED_APP_BUNDLE=/some/path/Syn.app ./script/build_and_run.sh` (the verification fixtures still stage their own copy under `~/Applications/Syn.app`).
+The script stages and launches the app at `~/Applications/Syn.app` so macOS privacy permissions attach to a stable app bundle. Override the location with `STAGED_APP_BUNDLE=/some/path/Syn.app ./script/build_and_run.sh`.
 
 When the `Apple Development: Tormod Haugland (QT5J6P28AM)` identity is available, the script uses it automatically so macOS privacy grants attach to a stable Team ID across rebuilds. It falls back to Developer ID and then `Rift Local Signing` only if Apple Development signing is unavailable. Override with `SYN_CODE_SIGN_IDENTITY="Identity Name"` if needed.
 
@@ -51,7 +51,7 @@ Global capture shortcuts:
 - `Left Shift + Right Shift + R`: open the capture picker.
 - `Left Shift + Right Shift`: press both Shift keys and release without pressing another key to repeat the last completed capture mode, or open the picker if no recording has completed yet. Repeat waits through a short suffix grace plus a brief input-drain pass, so `R` can still cancel pending repeat and open the picker when it is part of the same gesture.
 
-These shortcuts use a low-level listen-only HID event tap on a dedicated hotkey thread, with supplemental session, annotated-session, and AppKit key monitoring for R-key events. Syn reads the left/right Shift modifier bits from each keyboard event when macOS provides them, so duplicate modifier events do not accidentally fire repeat before the picker chord. While both Shifts are held, and again during the pending repeat window, Syn polls the physical R-key state so the picker can still win if macOS does not deliver a separate R event. If the repeat timer reaches its deadline just before an R event is processed, Syn performs a short input-drain pass before firing repeat. Accessibility permission must be granted to `/Applications/Syn.app` for them to register.
+These shortcuts use a low-level listen-only HID event tap on a dedicated hotkey thread, with supplemental session, annotated-session, and AppKit key monitoring for R-key events. Syn reads the left/right Shift modifier bits from each keyboard event when macOS provides them, so duplicate modifier events do not accidentally fire repeat before the picker chord. While both Shifts are held, and again during the pending repeat window, Syn polls the physical R-key state so the picker can still win if macOS does not deliver a separate R event. If the repeat timer reaches its deadline just before an R event is processed, Syn performs a short input-drain pass before firing repeat. Accessibility permission must be granted to `~/Applications/Syn.app` for them to register.
 
 App-local packet commands:
 
