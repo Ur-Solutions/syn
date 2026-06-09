@@ -43,11 +43,44 @@ else
 fi
 echo
 
-echo "App permission status"
+echo "Direct binary permission status"
+echo "NOTE: This can differ from the real app bundle permission state when launched through LaunchServices."
 if [[ -x "$APP_BINARY" ]]; then
   "$APP_BINARY" --syn-permission-status-fixture 2>&1 || true
 else
   echo "Cannot run permission status fixture; app binary is missing at $APP_BINARY."
+fi
+echo
+
+echo "LaunchServices app permission status"
+launch_status_path="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/syn-permission-status.XXXXXX")"
+rm -f "$launch_status_path"
+cleanup_launch_status() {
+  if [[ -n "${launch_status_path:-}" ]]; then
+    status_pids="$(/bin/ps axww -o pid= -o args= | /usr/bin/awk -v path="$launch_status_path" 'index($0, path) { print $1 }' || true)"
+    if [[ -n "$status_pids" ]]; then
+      while IFS= read -r status_pid; do
+        [[ -z "$status_pid" ]] && continue
+        /bin/kill "$status_pid" >/dev/null 2>&1 || true
+      done <<< "$status_pids"
+    fi
+    rm -f "$launch_status_path"
+  fi
+}
+trap cleanup_launch_status EXIT
+
+/usr/bin/open -n "$STAGED_APP_BUNDLE" --args --syn-permission-status-output "$launch_status_path" >/dev/null 2>&1 || true
+for _ in {1..40}; do
+  if [[ -s "$launch_status_path" ]]; then
+    break
+  fi
+  sleep 0.1
+done
+
+if [[ -s "$launch_status_path" ]]; then
+  /bin/cat "$launch_status_path"
+else
+  echo "Could not collect LaunchServices permission status from $STAGED_APP_BUNDLE."
 fi
 echo
 

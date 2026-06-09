@@ -11,6 +11,10 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                PermissionChecklistView()
+            }
+
             Section("Hotkeys") {
                 LabeledContent("Picker", value: appState.preferredPickerHotkey)
                 LabeledContent("Picker status", value: appState.pickerHotkeyStatus)
