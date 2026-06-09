@@ -525,7 +525,7 @@ enum VideoUtilities {
             guard annotation.startTimestamp >= 0,
                   annotation.startTimestamp <= duration,
                   let points = annotation.videoPoints,
-                  points.count >= 2 else {
+                  points.count >= (annotation.tool == .text ? 1 : 2) else {
                 continue
             }
 
@@ -586,6 +586,16 @@ enum VideoUtilities {
         to layer: CALayer,
         renderDuration: TimeInterval
     ) {
+        if annotation.tool == .text {
+            addTextAnnotation(
+                annotation,
+                point: points[0],
+                to: layer,
+                renderDuration: renderDuration
+            )
+            return
+        }
+
         let shape = CAShapeLayer()
         shape.frame = layer.bounds
         shape.fillColor = NSColor.clear.cgColor
@@ -609,6 +619,52 @@ enum VideoUtilities {
 
         shape.add(group, forKey: "syn-annotation")
         layer.addSublayer(shape)
+    }
+
+    private static func addTextAnnotation(
+        _ annotation: AnnotationStroke,
+        point: CGPoint,
+        to layer: CALayer,
+        renderDuration: TimeInterval
+    ) {
+        guard let text = annotation.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            return
+        }
+
+        let fontSize = max(20, CGFloat(annotation.lineWidth) * 4.8)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
+            .foregroundColor: NSColor(hex: annotation.colorHex) ?? .controlAccentColor
+        ]
+        let textSize = (text as NSString).size(withAttributes: attributes)
+
+        let textLayer = CATextLayer()
+        textLayer.frame = CGRect(
+            x: point.x,
+            y: point.y,
+            width: max(1, textSize.width + 8),
+            height: max(1, textSize.height + 8)
+        )
+        textLayer.string = NSAttributedString(string: text, attributes: attributes)
+        textLayer.contentsScale = 2
+        textLayer.alignmentMode = .left
+        textLayer.truncationMode = .end
+        textLayer.opacity = 0
+
+        let opacity = CAKeyframeAnimation(keyPath: "opacity")
+        opacity.values = [0, 1, 1]
+        opacity.keyTimes = [0, 0.08, 1]
+
+        let group = CAAnimationGroup()
+        group.animations = [opacity]
+        group.beginTime = AVCoreAnimationBeginTimeAtZero + annotation.startTimestamp
+        group.duration = max(0.2, renderDuration - annotation.startTimestamp)
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        group.isRemovedOnCompletion = false
+
+        textLayer.add(group, forKey: "syn-text-annotation")
+        layer.addSublayer(textLayer)
     }
 
     private static func annotationPath(tool: AnnotationTool, points: [CGPoint], lineWidth: CGFloat) -> CGPath {
@@ -640,6 +696,8 @@ enum VideoUtilities {
                 width: abs(end.x - start.x),
                 height: abs(end.y - start.y)
             ))
+        case .text:
+            break
         case .arrow:
             let start = points[0]
             let end = points[points.count - 1]
@@ -745,7 +803,7 @@ enum VideoUtilities {
                 )
             }
 
-            if videoPoints.count >= 2 {
+            if videoPoints.count >= (stroke.tool == .text ? 1 : 2) {
                 mappedStroke.videoPoints = videoPoints
             } else {
                 mappedStroke.videoPoints = nil
@@ -1103,7 +1161,7 @@ enum VideoUtilities {
                 )
             }
 
-            if videoPoints.count >= 2 {
+            if videoPoints.count >= (stroke.tool == .text ? 1 : 2) {
                 mappedStroke.videoPoints = videoPoints
             } else {
                 mappedStroke.videoPoints = nil

@@ -132,7 +132,7 @@ To photograb the recording HUD and canvas toolbar directly:
 SYN_UI_SHOW_CANVAS_TOOLBAR=1 ./script/capture_syn_ui.sh build/ui-captures/syn-canvas-toolbar-current.png
 ```
 
-The HUD includes a Canvas Mode toggle. Canvas Mode opens a draggable toolbar below the HUD with pen, line, rectangle, ellipse, delete selected, clear, and exit controls. The discard (trash) control is a two-step confirm: the first click arms it (the icon turns red), and a second click within a few seconds discards the in-progress recording without producing a packet. The smoke fixture verifies pen, line, rectangle, and ellipse metadata plus burned-in annotation overlays in `recording.mp4`.
+The HUD includes a Canvas Mode toggle. Canvas Mode opens a draggable toolbar below the HUD with pen, line, rectangle, ellipse, text, delete selected, clear, and exit controls. The discard (trash) control is a two-step confirm: the first click arms it (the icon turns red), and a second click within a few seconds discards the in-progress recording without producing a packet. The smoke fixture verifies pen, line, rectangle, ellipse, and text metadata plus burned-in annotation overlays in `recording.mp4`.
 
 To photograb the capture picker directly:
 

@@ -394,6 +394,7 @@ Expected:
 - [ ] Use line annotation.
 - [ ] Use rectangle annotation.
 - [ ] Use ellipse annotation.
+- [ ] Use text annotation.
 - [ ] Select an annotation and delete it.
 - [ ] Clear annotations.
 - [ ] Draw again after clearing.

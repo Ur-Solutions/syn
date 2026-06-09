@@ -30,6 +30,7 @@ final class AppState: ObservableObject {
     @Published var defaultPromptProfile: AgentPromptProfile = .generalCoding
     @Published var isCanvasModeEnabled = false
     @Published var selectedAnnotationTool: AnnotationTool?
+    @Published var canvasColorHex = "#EC6579"
     @Published var selectedAnnotationStrokeID: UUID?
     @Published var visibleAnnotationStrokes: [AnnotationStroke] = []
     @Published var videoEditInProgressPacketID: UUID?
@@ -161,6 +162,11 @@ final class AppState: ObservableObject {
         GlobalHotkeyService.shared.onToggleCanvasMode = { [weak self] in
             Task { @MainActor in
                 self?.toggleCanvasMode()
+            }
+        }
+        GlobalHotkeyService.shared.onExitCanvasMode = { [weak self] in
+            Task { @MainActor in
+                self?.setCanvasMode(false)
             }
         }
         GlobalHotkeyService.shared.onSelectCanvasTool = { [weak self] tool in
@@ -362,22 +368,15 @@ final class AppState: ObservableObject {
             showRecordingHUDFixture()
         }
         isCanvasModeEnabled = true
-        selectedAnnotationTool = .pen
-        visibleAnnotationStrokes = [
-            AnnotationStroke(
-                id: UUID(),
-                tool: .rectangle,
-                startTimestamp: 0,
-                endTimestamp: 1,
-                sourcePoints: [
-                    CodablePoint(x: 160, y: 160),
-                    CodablePoint(x: 360, y: 260)
-                ],
-                videoPoints: nil,
-                colorHex: "#0A84FF",
-                lineWidth: 5
-            )
-        ]
+        GlobalHotkeyService.shared.setCanvasModeActive(true)
+        selectedAnnotationTool = .arrow
+        canvasColorHex = "#EC6579"
+        annotationRecorder.start()
+        annotationRecorder.begin(tool: .rectangle, at: CGPoint(x: 160, y: 160), colorHex: canvasColorHex)
+        annotationRecorder.update(at: CGPoint(x: 360, y: 260))
+        annotationRecorder.finishDraft()
+        visibleAnnotationStrokes = annotationRecorder.visibleStrokes
+        selectedAnnotationStrokeID = visibleAnnotationStrokes.first?.id
         CanvasToolbarController.shared.show(appState: self)
         AnnotationOverlayController.shared.update(appState: self)
     }
@@ -901,8 +900,9 @@ final class AppState: ObservableObject {
         }
 
         isCanvasModeEnabled = enabled
+        GlobalHotkeyService.shared.setCanvasModeActive(enabled)
         if enabled {
-            selectedAnnotationTool = selectedAnnotationTool ?? .pen
+            selectedAnnotationTool = selectedAnnotationTool ?? .arrow
             AnnotationOverlayController.shared.update(appState: self)
             CanvasToolbarController.shared.show(appState: self)
             statusMessage = "Canvas mode on."
@@ -939,6 +939,10 @@ final class AppState: ObservableObject {
 
     func selectAnnotationStroke(id: UUID?) {
         selectedAnnotationStrokeID = id
+        if let id,
+           let stroke = visibleAnnotationStrokes.first(where: { $0.id == id }) {
+            canvasColorHex = stroke.colorHex
+        }
         CanvasToolbarController.shared.update(appState: self)
         AnnotationOverlayController.shared.update(appState: self)
     }
@@ -953,6 +957,7 @@ final class AppState: ObservableObject {
     }
 
     func clearAnnotations() {
+        TextAnnotationInputController.shared.cancel()
         annotationRecorder.clear()
         selectedAnnotationStrokeID = nil
         visibleAnnotationStrokes = []
@@ -960,18 +965,61 @@ final class AppState: ObservableObject {
         updateAnnotationOverlayVisibility()
     }
 
-    func beginAnnotationStroke(tool: AnnotationTool, at point: CGPoint) {
+    func beginAnnotationText(at point: CGPoint) {
         guard activeRecording?.phase == .recording else { return }
         selectedAnnotationStrokeID = nil
-        annotationRecorder.begin(tool: tool, at: point)
+        TextAnnotationInputController.shared.show(at: point, appState: self)
+        CanvasToolbarController.shared.update(appState: self)
+        AnnotationOverlayController.shared.update(appState: self)
+    }
+
+    func moveAnnotationStroke(id: UUID, by delta: CGSize) {
+        guard activeRecording?.phase == .recording else { return }
+        guard abs(delta.width) >= 0.25 || abs(delta.height) >= 0.25 else { return }
+        annotationRecorder.moveStroke(id: id, by: delta)
+        visibleAnnotationStrokes = annotationRecorder.visibleStrokes
+        AnnotationOverlayController.shared.update(appState: self)
+    }
+
+    func resizeAnnotationStroke(id: UUID, handle: AnnotationResizeHandle, to point: CGPoint, constrained: Bool) {
+        guard activeRecording?.phase == .recording else { return }
+        annotationRecorder.resizeStroke(id: id, handle: handle, to: point, constrained: constrained)
+        visibleAnnotationStrokes = annotationRecorder.visibleStrokes
+        AnnotationOverlayController.shared.update(appState: self)
+    }
+
+    func selectCanvasColor(hex: String) {
+        let normalized = normalizedCanvasColorHex(hex)
+        canvasColorHex = normalized
+        if let selectedAnnotationStrokeID {
+            annotationRecorder.setStrokeColor(id: selectedAnnotationStrokeID, colorHex: normalized)
+            visibleAnnotationStrokes = annotationRecorder.visibleStrokes
+            AnnotationOverlayController.shared.update(appState: self)
+        }
+        CanvasToolbarController.shared.update(appState: self)
+    }
+
+    func commitAnnotationText(_ text: String, at point: CGPoint) {
+        guard activeRecording?.phase == .recording else { return }
+        selectedAnnotationStrokeID = nil
+        annotationRecorder.addText(text, at: point, colorHex: canvasColorHex)
         visibleAnnotationStrokes = annotationRecorder.visibleStrokes
         CanvasToolbarController.shared.update(appState: self)
         AnnotationOverlayController.shared.update(appState: self)
     }
 
-    func updateAnnotationStroke(at point: CGPoint) {
+    func beginAnnotationStroke(tool: AnnotationTool, at point: CGPoint) {
         guard activeRecording?.phase == .recording else { return }
-        annotationRecorder.update(at: point)
+        selectedAnnotationStrokeID = nil
+        annotationRecorder.begin(tool: tool, at: point, colorHex: canvasColorHex)
+        visibleAnnotationStrokes = annotationRecorder.visibleStrokes
+        CanvasToolbarController.shared.update(appState: self)
+        AnnotationOverlayController.shared.update(appState: self)
+    }
+
+    func updateAnnotationStroke(at point: CGPoint, constrained: Bool = false) {
+        guard activeRecording?.phase == .recording else { return }
+        annotationRecorder.update(at: point, constrained: constrained)
         visibleAnnotationStrokes = annotationRecorder.visibleStrokes
         AnnotationOverlayController.shared.update(appState: self)
     }
@@ -997,8 +1045,23 @@ final class AppState: ObservableObject {
         sound.play()
     }
 
+    private func normalizedCanvasColorHex(_ hex: String) -> String {
+        var value = hex.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if value.hasPrefix("#") {
+            value.removeFirst()
+        }
+        let allowed = CharacterSet(charactersIn: "0123456789ABCDEF")
+        guard value.count == 6,
+              value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            return canvasColorHex
+        }
+        return "#\(value)"
+    }
+
     private func resetCanvasState(visibleStrokes: [AnnotationStroke] = []) {
+        TextAnnotationInputController.shared.cancel()
         isCanvasModeEnabled = false
+        GlobalHotkeyService.shared.setCanvasModeActive(false)
         selectedAnnotationTool = nil
         selectedAnnotationStrokeID = nil
         visibleAnnotationStrokes = visibleStrokes

@@ -398,6 +398,17 @@ enum FixtureProcessingRunner {
             ),
             AnnotationStroke(
                 id: UUID(),
+                tool: .text,
+                startTimestamp: 1.3,
+                endTimestamp: 1.7,
+                sourcePoints: [CodablePoint(x: 720, y: 220)],
+                videoPoints: nil,
+                colorHex: "#FF2D55",
+                lineWidth: 8,
+                text: "Check this"
+            ),
+            AnnotationStroke(
+                id: UUID(),
                 tool: .pen,
                 startTimestamp: 1.5,
                 endTimestamp: 2.1,
@@ -653,6 +664,9 @@ enum FixtureProcessingRunner {
         }
         service.onToggleCanvasMode = {
             canvasActions.append("toggle")
+        }
+        service.onExitCanvasMode = {
+            canvasActions.append("exit")
         }
         service.onSelectCanvasTool = { tool in
             canvasActions.append("tool:\(tool.rawValue)")
@@ -1146,6 +1160,7 @@ enum FixtureProcessingRunner {
         actions.removeAll()
         canvasActions.removeAll()
         service.resetChordStateForTesting()
+        service.setCanvasModeActive(true)
         service.handleKeyEventForTesting(
             leftShift: false,
             rightShift: true,
@@ -1174,13 +1189,28 @@ enum FixtureProcessingRunner {
             keyCode: CGKeyCode(21),
             type: .keyDown
         )
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(23),
+            type: .keyDown
+        )
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: true,
+            r: false,
+            keyCode: CGKeyCode(22),
+            type: .keyDown
+        )
         let canvasToolShortcutsPassed = actions.isEmpty
-            && canvasActions == ["tool:pen", "tool:line", "tool:rectangle", "tool:ellipse"]
+            && canvasActions == ["tool:arrow", "tool:rectangle", "tool:ellipse", "tool:text", "tool:line", "tool:pen"]
             && !service.hasPendingRepeatForTesting()
 
         actions.removeAll()
         canvasActions.removeAll()
         service.resetChordStateForTesting()
+        service.setCanvasModeActive(true)
         service.handleKeyEventForTesting(
             leftShift: false,
             rightShift: true,
@@ -1211,6 +1241,7 @@ enum FixtureProcessingRunner {
         actions.removeAll()
         canvasActions.removeAll()
         service.resetChordStateForTesting()
+        service.setCanvasModeActive(true)
         service.handleKeyEventForTesting(
             leftShift: false,
             rightShift: true,
@@ -1226,6 +1257,21 @@ enum FixtureProcessingRunner {
             type: .keyDown
         )
         let heldDDoesNotClearPassed = canvasActions.isEmpty
+            && !service.hasPendingRepeatForTesting()
+
+        actions.removeAll()
+        canvasActions.removeAll()
+        service.resetChordStateForTesting()
+        service.setCanvasModeActive(true)
+        service.handleKeyEventForTesting(
+            leftShift: false,
+            rightShift: false,
+            r: false,
+            keyCode: CGKeyCode(53),
+            type: .keyDown
+        )
+        let canvasEscapePassed = actions.isEmpty
+            && canvasActions == ["exit"]
             && !service.hasPendingRepeatForTesting()
 
         actions.removeAll()
@@ -1268,8 +1314,10 @@ enum FixtureProcessingRunner {
         service.onOpenPicker = nil
         service.onRepeatLastCapture = nil
         service.onToggleCanvasMode = nil
+        service.onExitCanvasMode = nil
         service.onSelectCanvasTool = nil
         service.onClearCanvas = nil
+        service.setCanvasModeActive(false)
 
         let passed = pickerPassed
             && rPreheldPickerPassed
@@ -1293,6 +1341,7 @@ enum FixtureProcessingRunner {
             && canvasToolShortcutsPassed
             && canvasClearDoubleTapPassed
             && heldDDoesNotClearPassed
+            && canvasEscapePassed
             && bothShiftCDoesNotTriggerCanvasPassed
 
         if !passed {
@@ -1321,6 +1370,7 @@ enum FixtureProcessingRunner {
             print("SYN_HOTKEY_CASE_CANVAS_TOOLS=\(canvasToolShortcutsPassed ? "passed" : "failed")")
             print("SYN_HOTKEY_CASE_CANVAS_CLEAR_DOUBLE_TAP=\(canvasClearDoubleTapPassed ? "passed" : "failed")")
             print("SYN_HOTKEY_CASE_CANVAS_HELD_D_NO_CLEAR=\(heldDDoesNotClearPassed ? "passed" : "failed")")
+            print("SYN_HOTKEY_CASE_CANVAS_ESCAPE=\(canvasEscapePassed ? "passed" : "failed")")
             print("SYN_HOTKEY_CASE_BOTH_SHIFT_C_NO_CANVAS=\(bothShiftCDoesNotTriggerCanvasPassed ? "passed" : "failed")")
         }
 
@@ -2881,6 +2931,17 @@ enum FixtureProcessingRunner {
             ),
             AnnotationStroke(
                 id: UUID(),
+                tool: .text,
+                startTimestamp: 0.6,
+                endTimestamp: 1.0,
+                sourcePoints: [CodablePoint(x: 650, y: 260)],
+                videoPoints: nil,
+                colorHex: "#FF2D55",
+                lineWidth: 8,
+                text: "Text note"
+            ),
+            AnnotationStroke(
+                id: UUID(),
                 tool: .pen,
                 startTimestamp: 0.5,
                 endTimestamp: 1.0,
@@ -2910,8 +2971,8 @@ enum FixtureProcessingRunner {
 
         return AnnotationRenderFixtureResult(
             passed: outputSize > 0
-                && result.renderedAnnotationCount == 5
-                && mappedCount == 5
+                && result.renderedAnnotationCount == 6
+                && mappedCount == 6
                 && colorPixels > 100,
             renderSize: result.renderSize,
             renderedAnnotationCount: result.renderedAnnotationCount,
@@ -2925,30 +2986,42 @@ enum FixtureProcessingRunner {
         let recorder = AnnotationRecorder()
         recorder.start()
 
-        recorder.begin(tool: .rectangle, at: CGPoint(x: 10, y: 20))
+        recorder.begin(tool: .rectangle, at: CGPoint(x: 10, y: 20), colorHex: "#EC6579")
         recorder.update(at: CGPoint(x: 110, y: 120))
         recorder.finishDraft()
+        let rectangleID = recorder.visibleStrokes.first?.id
 
         recorder.pause()
-        recorder.begin(tool: .arrow, at: CGPoint(x: 20, y: 20))
+        recorder.begin(tool: .arrow, at: CGPoint(x: 20, y: 20), colorHex: "#EC6579")
         recorder.update(at: CGPoint(x: 80, y: 80))
         recorder.finishDraft()
         let pausedInputIgnored = recorder.visibleStrokes.count == 1
         recorder.resume()
 
-        recorder.begin(tool: .line, at: CGPoint(x: 200, y: 220))
+        recorder.begin(tool: .arrow, at: CGPoint(x: 180, y: 190), colorHex: "#EC6579")
+        recorder.update(at: CGPoint(x: 320, y: 210), constrained: true)
+        recorder.finishDraft()
+
+        recorder.begin(tool: .line, at: CGPoint(x: 200, y: 220), colorHex: "#EC6579")
         recorder.update(at: CGPoint(x: 420, y: 340))
         recorder.finishDraft()
 
-        recorder.begin(tool: .ellipse, at: CGPoint(x: 120, y: 120))
+        recorder.begin(tool: .ellipse, at: CGPoint(x: 120, y: 120), colorHex: "#EC6579")
         recorder.update(at: CGPoint(x: 320, y: 220))
         recorder.finishDraft()
 
-        recorder.begin(tool: .pen, at: CGPoint(x: 40, y: 300))
+        recorder.addText("Fixture note", at: CGPoint(x: 260, y: 260), colorHex: "#EC6579")
+
+        recorder.begin(tool: .pen, at: CGPoint(x: 40, y: 300), colorHex: "#EC6579")
         recorder.update(at: CGPoint(x: 44, y: 304))
         recorder.update(at: CGPoint(x: 80, y: 330))
         recorder.update(at: CGPoint(x: 140, y: 310))
         recorder.finishDraft()
+
+        if let rectangleID {
+            recorder.moveStroke(id: rectangleID, by: CGSize(width: 5, height: -3))
+            recorder.setStrokeColor(id: rectangleID, colorHex: "#34C759")
+        }
 
         let strokes = recorder.stop()
         let tools = strokes.map(\.tool.rawValue)
@@ -2956,24 +3029,55 @@ enum FixtureProcessingRunner {
 
         let clearRecorder = AnnotationRecorder()
         clearRecorder.start()
-        clearRecorder.begin(tool: .rectangle, at: CGPoint(x: 1, y: 1))
+        clearRecorder.begin(tool: .rectangle, at: CGPoint(x: 1, y: 1), colorHex: "#EC6579")
         clearRecorder.update(at: CGPoint(x: 40, y: 40))
         clearRecorder.finishDraft()
         clearRecorder.clear()
         let clearPassed = clearRecorder.visibleStrokes.isEmpty && clearRecorder.stop().isEmpty
 
-        let shapePointCountsPassed = strokes.count == 4
+        let resizeRecorder = AnnotationRecorder()
+        resizeRecorder.start()
+        resizeRecorder.begin(tool: .rectangle, at: CGPoint(x: 0, y: 0), colorHex: "#EC6579")
+        resizeRecorder.update(at: CGPoint(x: 100, y: 50))
+        resizeRecorder.finishDraft()
+        let resizeRectangleID = resizeRecorder.visibleStrokes.first?.id
+        if let resizeRectangleID {
+            resizeRecorder.resizeStroke(
+                id: resizeRectangleID,
+                handle: .topRight,
+                to: CGPoint(x: 150, y: 120),
+                constrained: true
+            )
+        }
+        let resizedRectangle = resizeRecorder.visibleStrokes.first
+        let resizeBounds = resizedRectangle?.sourceBounds
+        let constrainedResizePassed = resizeBounds.map { abs($0.width - $0.height) < 0.01 && abs($0.width - 150) < 0.01 } ?? false
+
+        let shapePointCountsPassed = strokes.count == 6
             && strokes[0].sourcePoints.count == 2
             && strokes[1].sourcePoints.count == 2
             && strokes[2].sourcePoints.count == 2
-            && strokes[3].sourcePoints.count >= 3
+            && strokes[3].sourcePoints.count == 2
+            && strokes[4].sourcePoints.count == 1
+            && strokes[4].text == "Fixture note"
+            && strokes[5].sourcePoints.count >= 3
+        let constrainedArrowPassed = strokes.count > 1
+            && abs((strokes[1].sourcePoints.first?.y ?? 0) - (strokes[1].sourcePoints.last?.y ?? 1)) < 0.01
         let durationsPassed = strokes.allSatisfy { $0.duration >= 0.2 }
-        let passed = tools == ["rectangle", "line", "ellipse", "pen"]
+        let moveAndColorPassed = strokes.first?.sourcePoints.first?.x == 15.0
+            && strokes.first?.sourcePoints.first?.y == 17.0
+            && strokes.first?.sourcePoints.last?.x == 115.0
+            && strokes.first?.sourcePoints.last?.y == 117.0
+            && strokes.first?.colorHex == "#34C759"
+        let passed = tools == ["rectangle", "arrow", "line", "ellipse", "text", "pen"]
             && pausedInputIgnored
             && stopClearedDraft
             && clearPassed
             && shapePointCountsPassed
+            && constrainedArrowPassed
+            && constrainedResizePassed
             && durationsPassed
+            && moveAndColorPassed
 
         return AnnotationRecorderFixtureResult(
             passed: passed,

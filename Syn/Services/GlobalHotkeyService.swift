@@ -30,6 +30,7 @@ final class GlobalHotkeyService {
     var onOpenPicker: (() -> Void)?
     var onRepeatLastCapture: (() -> Void)?
     var onToggleCanvasMode: (() -> Void)?
+    var onExitCanvasMode: (() -> Void)?
     var onSelectCanvasTool: ((AnnotationTool) -> Void)?
     var onClearCanvas: (() -> Void)?
 
@@ -38,10 +39,13 @@ final class GlobalHotkeyService {
     private let rKeyCode = CGKeyCode(15)
     private let cKeyCode = CGKeyCode(8)
     private let dKeyCode = CGKeyCode(2)
+    private let escapeKeyCode = CGKeyCode(53)
     private let oneKeyCode = CGKeyCode(18)
     private let twoKeyCode = CGKeyCode(19)
     private let threeKeyCode = CGKeyCode(20)
     private let fourKeyCode = CGKeyCode(21)
+    private let fiveKeyCode = CGKeyCode(23)
+    private let sixKeyCode = CGKeyCode(22)
     private let leftShiftEventFlagMask = UInt64(NX_DEVICELSHIFTKEYMASK)
     private let rightShiftEventFlagMask = UInt64(NX_DEVICERSHIFTKEYMASK)
     private let chordRPollInterval: TimeInterval = 0.001
@@ -54,6 +58,7 @@ final class GlobalHotkeyService {
     private let resolutionQueueKey = DispatchSpecificKey<Void>()
     private let lifecycleLock = NSLock()
     private let snapshotLock = NSLock()
+    private let canvasModeLock = NSLock()
     private let debugEventLogURL = GlobalHotkeyService.debugEventLogURLFromArguments()
     private let debugEventLogLock = NSLock()
 
@@ -81,6 +86,7 @@ final class GlobalHotkeyService {
     private var physicalRKeyStateOverride: Bool?
     private var lastCanvasDKeyDownAtNanoseconds: UInt64?
     private var lastKeyEventUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+    private var storedCanvasModeActive = false
 
     private var storedRegistrationSnapshot = GlobalHotkeyRegistrationSnapshot(
         eventHandlerStatus: nil,
@@ -147,19 +153,19 @@ final class GlobalHotkeyService {
     }
 
     func handleKeyStateForTesting(leftShift: Bool, rightShift: Bool, r: Bool) {
-        syncOnResolutionQueue {
+        _ = syncOnResolutionQueue {
             handleKeyState(leftShift: leftShift, rightShift: rightShift, r: r)
         }
     }
 
     func handleKeyEventForTesting(leftShift: Bool, rightShift: Bool, r: Bool, keyCode: CGKeyCode, type: CGEventType) {
-        syncOnResolutionQueue {
+        _ = syncOnResolutionQueue {
             handleKeyState(leftShift: leftShift, rightShift: rightShift, r: r, keyCode: keyCode, type: type)
         }
     }
 
     func handleRawKeyEventForTesting(keyCode: CGKeyCode, type: CGEventType, eventFlagsRaw: UInt64) {
-        syncOnResolutionQueue {
+        _ = syncOnResolutionQueue {
             handleKeyEvent(keyCode: keyCode, type: type, eventFlags: CGEventFlags(rawValue: eventFlagsRaw))
         }
     }
@@ -177,6 +183,12 @@ final class GlobalHotkeyService {
             }
             firePendingRepeatIfCurrent(generation: pendingRepeatGeneration, checkPhysicalRKey: false)
         }
+    }
+
+    func setCanvasModeActive(_ active: Bool) {
+        canvasModeLock.lock()
+        storedCanvasModeActive = active
+        canvasModeLock.unlock()
     }
 
     func firePendingRepeatWithInputDrainForTesting() {
@@ -230,7 +242,9 @@ final class GlobalHotkeyService {
             }
 
             let service = Unmanaged<GlobalHotkeyService>.fromOpaque(userInfo).takeUnretainedValue()
-            service.handleEventTapCallback(type: type, event: event)
+            if service.handleEventTapCallback(type: type, event: event) {
+                return nil
+            }
             return Unmanaged.passUnretained(event)
         }
 
@@ -298,7 +312,7 @@ final class GlobalHotkeyService {
         guard let tap = CGEvent.tapCreate(
             tap: location,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: .defaultTap,
             eventsOfInterest: eventMask,
             callback: callback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
@@ -333,23 +347,23 @@ final class GlobalHotkeyService {
         taps.forEach { CFMachPortInvalidate($0) }
     }
 
-    private func handleEventTapCallback(type: CGEventType, event: CGEvent) {
+    private func handleEventTapCallback(type: CGEventType, event: CGEvent) -> Bool {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             lifecycleLock.lock()
             let taps = eventTaps
             lifecycleLock.unlock()
             taps.forEach { CGEvent.tapEnable(tap: $0, enable: true) }
-            return
+            return false
         }
 
         guard type == .keyDown || type == .keyUp || type == .flagsChanged else {
-            return
+            return false
         }
 
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         let eventFlags = event.flags
-        resolutionQueue.async { [weak self] in
-            self?.handleKeyEvent(keyCode: keyCode, type: type, eventFlags: eventFlags)
+        return syncOnResolutionQueue {
+            handleKeyEvent(keyCode: keyCode, type: type, eventFlags: eventFlags)
         }
     }
 
@@ -411,11 +425,12 @@ final class GlobalHotkeyService {
         let keyCode = CGKeyCode(event.keyCode)
         resolutionQueue.async { [weak self] in
             self?.recordDebugEvent("monitor key=\(keyCode) type=\(type.rawValue)")
-            self?.handleKeyEvent(keyCode: keyCode, type: type, eventFlags: nil)
+            _ = self?.handleKeyEvent(keyCode: keyCode, type: type, eventFlags: nil)
         }
     }
 
-    private func handleKeyEvent(keyCode: CGKeyCode, type: CGEventType, eventFlags: CGEventFlags? = nil) {
+    @discardableResult
+    private func handleKeyEvent(keyCode: CGKeyCode, type: CGEventType, eventFlags: CGEventFlags? = nil) -> Bool {
         lastKeyEventUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
 
         var leftShift = isLeftShiftDown
@@ -454,7 +469,7 @@ final class GlobalHotkeyService {
         recordDebugEvent(
             "event key=\(keyCode) type=\(type.rawValue) flags=\(eventFlags?.rawValue ?? 0) left=\(leftShift) right=\(rightShift) r=\(r)"
         )
-        handleKeyState(leftShift: leftShift, rightShift: rightShift, r: r, keyCode: keyCode, type: type)
+        return handleKeyState(leftShift: leftShift, rightShift: rightShift, r: r, keyCode: keyCode, type: type)
     }
 
     private func shiftState(from eventFlags: CGEventFlags) -> (left: Bool, right: Bool)? {
@@ -468,13 +483,14 @@ final class GlobalHotkeyService {
         return nil
     }
 
+    @discardableResult
     private func handleKeyState(
         leftShift: Bool,
         rightShift: Bool,
         r: Bool,
         keyCode: CGKeyCode? = nil,
         type: CGEventType? = nil
-    ) {
+    ) -> Bool {
         let wasRDown = isRDown
         let wasBothShiftsDown = isLeftShiftDown && isRightShiftDown
         var resolvedR = r
@@ -519,7 +535,7 @@ final class GlobalHotkeyService {
             rightShift: rightShift,
             now: now
         ) {
-            return
+            return true
         }
 
         if pendingRepeatWorkItem != nil, type == .flagsChanged, isShiftKey, anyShiftDown {
@@ -528,7 +544,7 @@ final class GlobalHotkeyService {
 
         if pendingRepeatWorkItem != nil, rKeyParticipatedInChord || resolvedR || isRKeyEvent {
             triggerPickerShortcut()
-            return
+            return false
         }
 
         if pendingRepeatWorkItem != nil, isNonShiftKeyDown {
@@ -537,7 +553,7 @@ final class GlobalHotkeyService {
             if keyCode == rKeyCode {
                 triggerPickerShortcut()
             }
-            return
+            return false
         }
 
         if bothShiftsDown, !shiftChordArmed, !chordTriggered {
@@ -554,7 +570,7 @@ final class GlobalHotkeyService {
             nonShiftKeyPressedDuringChord = true
             rKeyParticipatedInChord = true
             triggerPickerShortcut()
-            return
+            return false
         }
 
         if shiftChordArmed, isNonShiftKeyDown {
@@ -564,7 +580,7 @@ final class GlobalHotkeyService {
         if shiftChordArmed, bothShiftsDown, resolvedR {
             rKeyParticipatedInChord = true
             triggerPickerShortcut()
-            return
+            return false
         }
 
         if wasRDown {
@@ -586,6 +602,7 @@ final class GlobalHotkeyService {
                 rKeyParticipatedInChord = false
             }
         }
+        return false
     }
 
     private func handleCanvasShortcutIfNeeded(
@@ -595,10 +612,24 @@ final class GlobalHotkeyService {
         rightShift: Bool,
         now: UInt64
     ) -> Bool {
-        guard type == .keyDown,
-              rightShift,
-              !leftShift,
-              let keyCode else {
+        guard type == .keyDown, let keyCode else {
+            return false
+        }
+
+        if keyCode == escapeKeyCode, isCanvasModeActive {
+            cancelPendingRepeat()
+            resetChordResolutionState()
+            NSLog("Syn global shortcut pressed: Escape canvas exit")
+            recordDebugEvent("action canvas-exit")
+            onExitCanvasMode?()
+            return true
+        }
+
+        guard rightShift, !leftShift else {
+            return false
+        }
+
+        guard keyCode == cKeyCode || isCanvasModeActive else {
             return false
         }
 
@@ -615,16 +646,22 @@ final class GlobalHotkeyService {
             onToggleCanvasMode?()
             return true
         case oneKeyCode:
-            triggerCanvasToolShortcut(.pen)
+            triggerCanvasToolShortcut(.arrow)
             return true
         case twoKeyCode:
-            triggerCanvasToolShortcut(.line)
-            return true
-        case threeKeyCode:
             triggerCanvasToolShortcut(.rectangle)
             return true
-        case fourKeyCode:
+        case threeKeyCode:
             triggerCanvasToolShortcut(.ellipse)
+            return true
+        case fourKeyCode:
+            triggerCanvasToolShortcut(.text)
+            return true
+        case fiveKeyCode:
+            triggerCanvasToolShortcut(.line)
+            return true
+        case sixKeyCode:
+            triggerCanvasToolShortcut(.pen)
             return true
         case dKeyCode:
             guard !isDDown else {
@@ -648,6 +685,12 @@ final class GlobalHotkeyService {
         default:
             return false
         }
+    }
+
+    private var isCanvasModeActive: Bool {
+        canvasModeLock.lock()
+        defer { canvasModeLock.unlock() }
+        return storedCanvasModeActive
     }
 
     private func triggerCanvasToolShortcut(_ tool: AnnotationTool) {

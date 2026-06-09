@@ -36,11 +36,11 @@ Latest annotation verifier:
   - `SYN_UI_SHOW_CANVAS_TOOLBAR=1 ./script/capture_syn_ui.sh build/ui-captures/syn-canvas-toolbar-20260605.png`
 - Result: all passed
 - Evidence:
-  - `SYN_ANNOTATION_RECORDER_FIXTURE=passed`, `SYN_ANNOTATION_RECORDER_TOOLS=rectangle,line,ellipse,pen`, `SYN_ANNOTATION_RECORDER_PAUSED_IGNORED=yes`, and `SYN_ANNOTATION_RECORDER_CLEAR=passed`.
-  - `SYN_ANNOTATION_RENDER_FIXTURE=passed` verifies line, ellipse, pen, rectangle, and legacy arrow burn-in rendering.
-  - The smoke packet verifier expects `annotationCount=4`, `annotationMapping.mappedStrokeCount=4`, `annotationMapping.renderedStrokeCount=4`, and `raw/annotations.json` with rectangle, line, ellipse, and pen strokes mapped to final video coordinates.
+  - `SYN_ANNOTATION_RECORDER_FIXTURE=passed`, `SYN_ANNOTATION_RECORDER_TOOLS=rectangle,arrow,line,ellipse,text,pen`, `SYN_ANNOTATION_RECORDER_PAUSED_IGNORED=yes`, and `SYN_ANNOTATION_RECORDER_CLEAR=passed`.
+  - `SYN_ANNOTATION_RENDER_FIXTURE=passed` verifies line, ellipse, text, pen, rectangle, and legacy arrow burn-in rendering.
+  - The smoke packet verifier expects `annotationCount=5`, `annotationMapping.mappedStrokeCount=5`, `annotationMapping.renderedStrokeCount=5`, and `raw/annotations.json` with rectangle, line, ellipse, text, and pen annotations mapped to final video coordinates.
   - `agent-prompt.md` includes `raw/annotations.json` and the annotation mapping summary.
-  - `build/ui-captures/syn-canvas-toolbar-20260605.png` shows the Canvas Mode toolbar with pen, line, rectangle, ellipse, delete, clear, and exit controls. Its status sidecar reports Microphone, Screen Recording, and Accessibility all granted.
+  - `build/ui-captures/syn-canvas-toolbar-20260605.png` shows the Canvas Mode toolbar with pen, line, rectangle, ellipse, text, delete, clear, and exit controls. Its status sidecar reports Microphone, Screen Recording, and Accessibility all granted.
 
 Latest Chrome tab verifier:
 
@@ -199,7 +199,7 @@ Latest draggable region verifier:
 | Pointer/click metadata stored with source and video coordinates | Implemented | `PointerEventRecorder`, `PointerEvent`, `manifest.pointerMapping`; smoke verifies mapped pointer events and raw `pointer-events.json`. |
 | Microphone-only recording; no system/app audio | Implemented | `ScreenCaptureRecorder`; capture configuration fixture verifies mic enabled, system audio disabled, current-process audio excluded. |
 | HUD with timer, mic level, pause/resume, stop | Implemented | `RecordingHUDView`; HUD photograbs; pause/resume fixtures. |
-| Drawing/annotation overlay with pen, line, rectangle, and ellipse strokes | Implemented | `AnnotationOverlayController`, `AnnotationRecorder`, `AnnotationModels`, Canvas Mode toolbar controls; `--syn-annotation-recorder-fixture`, `--syn-annotation-render-fixture`, smoke annotation manifest/prompt assertions, and toolbar photograb `build/ui-captures/syn-canvas-toolbar-20260605.png`. |
+| Drawing/annotation overlay with pen, line, rectangle, ellipse, and text annotations | Implemented | `AnnotationOverlayController`, `AnnotationRecorder`, `AnnotationModels`, Canvas Mode toolbar controls; `--syn-annotation-recorder-fixture`, `--syn-annotation-render-fixture`, smoke annotation manifest/prompt assertions, and toolbar photograb `build/ui-captures/syn-canvas-toolbar-20260605.png`. |
 | Pause omits video/mic from final timeline and stores intervals | Implemented | paused packet fixture verifies final duration and `manifest.pauses`. |
 | Warn at 30 minutes, no hard limit | Implemented | `RecordingDurationWarning`; `--syn-duration-warning-fixture`. |
 | 30 FPS H.264 MP4 with AAC audio | Implemented | smoke uses `ffprobe` on processed, raw, paused, and retried recordings. |
