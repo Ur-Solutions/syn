@@ -20,6 +20,7 @@
 		AA0000000000000000000111 /* PermissionsChecklistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* PermissionsChecklistView.swift */; };
 		AA0000000000000000000112 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000012 /* SettingsView.swift */; };
 		AA0000000000000000000113 /* DurationFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000013 /* DurationFormatter.swift */; };
+		AA0000000000000000000151 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000051 /* DesignSystem.swift */; };
 		AA0000000000000000000114 /* CaptureRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000014 /* CaptureRequest.swift */; };
 		AA0000000000000000000115 /* RecordingModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000015 /* RecordingModels.swift */; };
 		AA0000000000000000000116 /* PointerEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000016 /* PointerEvent.swift */; };
@@ -70,6 +71,7 @@
 		AA0000000000000000000011 /* PermissionsChecklistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsChecklistView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000012 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000013 /* DurationFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DurationFormatter.swift; sourceTree = "<group>"; };
+		AA0000000000000000000051 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		AA0000000000000000000014 /* CaptureRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRequest.swift; sourceTree = "<group>"; };
 		AA0000000000000000000015 /* RecordingModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingModels.swift; sourceTree = "<group>"; };
 		AA0000000000000000000016 /* PointerEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointerEvent.swift; sourceTree = "<group>"; };
@@ -232,6 +234,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000013 /* DurationFormatter.swift */,
+				AA0000000000000000000051 /* DesignSystem.swift */,
 			);
 			path = Support;
 			sourceTree = "<group>";
@@ -359,6 +362,7 @@
 				AA0000000000000000000111 /* PermissionsChecklistView.swift in Sources */,
 				AA0000000000000000000112 /* SettingsView.swift in Sources */,
 				AA0000000000000000000113 /* DurationFormatter.swift in Sources */,
+				AA0000000000000000000151 /* DesignSystem.swift in Sources */,
 				AA0000000000000000000114 /* CaptureRequest.swift in Sources */,
 				AA0000000000000000000115 /* RecordingModels.swift in Sources */,
 				AA0000000000000000000116 /* PointerEvent.swift in Sources */,

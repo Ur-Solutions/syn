@@ -6,162 +6,205 @@ struct RecordingHUDView: View {
     @State private var disarmTask: Task<Void, Never>?
 
     var body: some View {
-        Group {
-            if appState.completionFlash {
-                completionFlash
-            } else {
-                recordingControls
-            }
-        }
-        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: appState.completionFlash)
+        pill
+            .frame(maxWidth: .infinity, maxHeight: .infinity) // center within the transparent panel
+            .animation(.spring(response: 0.32, dampingFraction: 0.8), value: appState.completionFlash)
+            .animation(.spring(response: 0.32, dampingFraction: 0.8), value: isProcessing)
     }
 
-    private var completionFlash: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "checkmark.seal.fill")
-                .font(.title2)
-                .foregroundStyle(.green)
-                .symbolEffect(.bounce, options: .repeat(2))
-            Image(systemName: "sparkles")
-                .font(.title3)
-                .foregroundStyle(.yellow)
-                .symbolEffect(.variableColor.iterative, options: .repeating)
+    private var pillShape: RoundedRectangle { RoundedRectangle(cornerRadius: 18, style: .continuous) }
+
+    private var pill: some View {
+        content
+            .padding(.horizontal, 18)
+            .padding(.vertical, 11)
+            .background(.regularMaterial, in: pillShape)
+            .overlay(pillShape.strokeBorder(SynColor.materialBorder, lineWidth: 1))
+            .synShadow(0)
+            .fixedSize()
+    }
+
+    @ViewBuilder private var content: some View {
+        if appState.completionFlash {
+            completionContent
+        } else if isProcessing {
+            processingContent
+        } else {
+            recordingContent
+        }
+    }
+
+    // MARK: Recording / paused
+
+    private var recordingContent: some View {
+        HStack(spacing: 14) {
+            SynStatusDot(state: dotState, pulse: dotState == .recording, size: 10)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(phaseTitle)
+                    .synFont(.subhead)
+                    .foregroundStyle(SynColor.text2)
+                TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                    HStack(spacing: 8) {
+                        Text(elapsedText(at: timeline.date))
+                            .font(SynFont.mono(17, weight: .medium))
+                            .foregroundStyle(SynColor.text1)
+                        if showWarning(at: timeline.date) {
+                            Text(RecordingDurationWarning.shortLabel)
+                                .synFont(.footnote)
+                                .foregroundStyle(SynColor.warning)
+                        }
+                    }
+                }
+            }
+            .frame(minWidth: 92, alignment: .leading)
+
+            HUDMicMeter(level: appState.micLevel, isActive: appState.isMicMeterActive)
+
+            Rectangle()
+                .fill(SynColor.hairline)
+                .frame(width: 1, height: 26)
+                .padding(.horizontal, 2)
+
+            HStack(spacing: 8) {
+                hudButton(
+                    system: "paintpalette",
+                    help: "Canvas Mode",
+                    kind: appState.isCanvasModeEnabled ? .active : .neutral,
+                    disabled: isProcessing || appState.activeRecording?.phase != .recording
+                ) { appState.toggleCanvasMode() }
+
+                hudButton(
+                    system: appState.activeRecording?.isPaused == true ? "play.fill" : "pause.fill",
+                    help: appState.activeRecording?.isPaused == true ? "Resume" : "Pause",
+                    kind: .neutral,
+                    disabled: isProcessing
+                ) { appState.pauseOrResumeRecording() }
+
+                hudButton(
+                    system: isDiscardArmed ? "trash.fill" : "trash",
+                    help: isDiscardArmed ? "Click again to discard recording" : "Discard recording",
+                    kind: isDiscardArmed ? .armed : .neutral,
+                    disabled: isProcessing
+                ) { handleDiscard() }
+
+                hudButton(system: "stop.fill", help: "Stop", kind: .stop, disabled: isProcessing) {
+                    appState.stopRecording()
+                }
+            }
+        }
+    }
+
+    // MARK: Processing
+
+    private var processingContent: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(SynColor.accent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Building packet…")
+                    .synFont(.headline)
+                    .foregroundStyle(SynColor.text1)
+                Text("Transcribing, summarizing, packaging…")
+                    .synFont(.footnote)
+                    .foregroundStyle(SynColor.text2)
+            }
+            .frame(minWidth: 168, alignment: .leading)
+        }
+    }
+
+    // MARK: Completion — one calm beat
+
+    private var completionContent: some View {
+        HStack(spacing: 11) {
+            ZStack {
+                Circle().fill(SynColor.successTint).frame(width: 34, height: 34)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(SynColor.success)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text("Packet ready")
-                    .font(.callout)
-                    .fontWeight(.semibold)
-                Text("Transcript & summary done")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .synFont(.headline)
+                    .foregroundStyle(SynColor.text1)
+                Text("Copied to clipboard")
+                    .synFont(.footnote)
+                    .foregroundStyle(SynColor.text2)
             }
+            .frame(minWidth: 150, alignment: .leading)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .transition(.scale(scale: 0.85).combined(with: .opacity))
+        .transition(.scale(scale: 0.9).combined(with: .opacity))
     }
 
-    private var recordingControls: some View {
-        HStack(spacing: 12) {
-            Image(systemName: iconName)
-                .foregroundStyle(iconColor)
+    // MARK: HUD icon button
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(phaseTitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(elapsedText(at: timeline.date))
-                            .font(.system(.body, design: .monospaced))
-                            .fontWeight(.semibold)
-                        if appState.activeRecording?.hasDurationWarning == true
-                            || elapsed(at: timeline.date) >= RecordingDurationWarning.threshold {
-                            Text(RecordingDurationWarning.shortLabel)
-                                .font(.caption2)
-                                .foregroundStyle(.yellow)
-                        }
-                    }
-                }
-            }
-            .frame(width: 112, alignment: .leading)
+    private enum HUDButtonKind { case neutral, active, armed, stop }
 
-            MicLevelMeter(level: appState.micLevel, isActive: appState.isMicMeterActive)
-                .frame(width: 54, height: 18)
+    private func hudButton(
+        system: String,
+        help: String,
+        kind: HUDButtonKind,
+        disabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        let bg: Color
+        let border: Color
+        let fg: Color
+        switch kind {
+        case .neutral: bg = SynColor.surface2; border = SynColor.hairline; fg = SynColor.text2
+        case .active:  bg = SynColor.accentTint; border = SynColor.accentRing; fg = SynColor.accentDeep
+        case .armed:   bg = SynColor.destructive.opacity(0.14); border = SynColor.destructive.opacity(0.5); fg = SynColor.destructive
+        case .stop:    bg = SynColor.destructive; border = .clear; fg = .white
+        }
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        return Button(action: action) {
+            Image(systemName: system)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(fg)
+                .frame(width: 38, height: 34)
+                .background(bg, in: shape)
+                .overlay(shape.strokeBorder(border, lineWidth: 1))
+                .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.4 : 1)
+        .help(help)
+    }
 
-            Divider()
-                .frame(height: 24)
-
-            Button {
-                appState.toggleCanvasMode()
-            } label: {
-                Image(systemName: appState.isCanvasModeEnabled ? "paintpalette.fill" : "paintpalette")
-                    .frame(width: 16, height: 16)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .tint(appState.isCanvasModeEnabled ? .accentColor : nil)
-            .disabled(isProcessing || appState.activeRecording?.phase != .recording)
-            .help("Canvas Mode")
-
-            Button {
-                appState.pauseOrResumeRecording()
-            } label: {
-                Image(systemName: appState.activeRecording?.isPaused == true ? "play.fill" : "pause.fill")
-            }
-            .disabled(isProcessing)
-            .help(appState.activeRecording?.isPaused == true ? "Resume" : "Pause")
-
-            Button(role: .destructive) {
-                if isDiscardArmed {
-                    disarmTask?.cancel()
-                    disarmTask = nil
+    private func handleDiscard() {
+        if isDiscardArmed {
+            disarmTask?.cancel()
+            disarmTask = nil
+            isDiscardArmed = false
+            appState.discardRecording()
+        } else {
+            isDiscardArmed = true
+            disarmTask?.cancel()
+            disarmTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if !Task.isCancelled {
                     isDiscardArmed = false
-                    appState.discardRecording()
-                } else {
-                    isDiscardArmed = true
-                    disarmTask?.cancel()
-                    disarmTask = Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 3_000_000_000)
-                        if !Task.isCancelled {
-                            isDiscardArmed = false
-                            disarmTask = nil
-                        }
-                    }
+                    disarmTask = nil
                 }
-            } label: {
-                Image(systemName: isDiscardArmed ? "trash.fill" : "trash")
-                    .frame(width: 16, height: 16)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .tint(isDiscardArmed ? .red : nil)
-            .disabled(isProcessing)
-            .help(isDiscardArmed ? "Click again to discard recording" : "Discard recording")
-
-            Button(role: .destructive) {
-                appState.stopRecording()
-            } label: {
-                Image(systemName: "stop.fill")
-            }
-            .disabled(isProcessing)
-            .help("Stop")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var iconName: String {
-        switch appState.activeRecording?.phase {
-        case .paused:
-            "pause.circle.fill"
-        case .processing:
-            "gearshape.circle.fill"
-        default:
-            "record.circle.fill"
         }
     }
 
-    private var iconColor: Color {
+    // MARK: Derived
+
+    private var dotState: SynState {
         switch appState.activeRecording?.phase {
-        case .paused:
-            .yellow
-        case .processing:
-            .blue
-        default:
-            .red
+        case .paused: return .paused
+        default: return .recording
         }
     }
 
     private var phaseTitle: String {
         switch appState.activeRecording?.phase {
-        case .processing:
-            "Processing"
-        case .paused:
-            "Paused"
-        default:
-            appState.activeRecording?.mode.title ?? "Recording"
+        case .paused: return "Paused"
+        default: return appState.activeRecording?.mode.title ?? "Recording"
         }
     }
 
@@ -169,9 +212,13 @@ struct RecordingHUDView: View {
         appState.activeRecording?.phase == .processing
     }
 
+    private func showWarning(at date: Date) -> Bool {
+        appState.activeRecording?.hasDurationWarning == true
+            || elapsed(at: date) >= RecordingDurationWarning.threshold
+    }
+
     private func elapsedText(at date: Date) -> String {
-        let elapsed = elapsed(at: date)
-        let seconds = Int(elapsed.rounded())
+        let seconds = Int(elapsed(at: date).rounded())
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 
@@ -180,43 +227,35 @@ struct RecordingHUDView: View {
     }
 }
 
-private struct MicLevelMeter: View {
+/// Continuous mic meter: a small green→gray waveform that fills with the level.
+private struct HUDMicMeter: View {
     let level: Double
     let isActive: Bool
+    private let bars = 11
 
     var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "mic.fill")
-                .font(.caption2)
-                .foregroundStyle(isActive ? .secondary : .tertiary)
-
-            HStack(alignment: .bottom, spacing: 2) {
-                ForEach(0..<5, id: \.self) { index in
-                    Capsule()
-                        .fill(barColor(index: index))
-                        .frame(width: 4, height: barHeight(index: index))
-                }
+        HStack(alignment: .center, spacing: 2.5) {
+            ForEach(0..<bars, id: \.self) { i in
+                Capsule(style: .continuous)
+                    .fill(color(for: i))
+                    .frame(width: 3, height: height(for: i))
             }
-            .frame(width: 28, height: 16, alignment: .bottom)
         }
+        .frame(height: 18)
         .help("Microphone level")
     }
 
-    private func barHeight(index: Int) -> CGFloat {
-        let threshold = Double(index + 1) / 5
-        return level >= threshold && isActive ? CGFloat(6 + index * 2) : 4
+    private func height(for i: Int) -> CGFloat {
+        let t = Double(i) / Double(bars - 1)   // 0…1
+        let hump = sin(.pi * t)                // 0…1…0
+        return 5 + CGFloat(hump) * 12          // 5…17pt
     }
 
-    private func barColor(index: Int) -> Color {
-        guard isActive else {
-            return .secondary.opacity(0.25)
-        }
-
-        let threshold = Double(index + 1) / 5
-        if level >= threshold {
-            return index >= 4 ? .yellow : .green
-        }
-        return .secondary.opacity(0.25)
+    private func color(for i: Int) -> Color {
+        let clamped = min(max(level, 0), 1)
+        let activeCount = Int((Double(bars) * clamped).rounded())
+        if isActive && i < activeCount { return SynColor.success }
+        return SynColor.text3.opacity(0.35)
     }
 }
 
@@ -235,17 +274,24 @@ final class RecordingHUDController {
 
     func show(appState: AppState) {
         self.appState = appState
+        if appState.isCanvasModeEnabled {
+            AnnotationOverlayController.shared.update(appState: appState)
+        }
 
         if panel == nil {
             let hostingView = NSHostingView(rootView: RecordingHUDView().environmentObject(appState))
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 72),
-                styleMask: [.nonactivatingPanel, .hudWindow],
+                contentRect: NSRect(x: 0, y: 0, width: 640, height: 104),
+                styleMask: [.borderless, .nonactivatingPanel],
                 backing: .buffered,
                 defer: false
             )
             panel.contentView = hostingView
-            panel.level = .floating
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = false
+            panel.isFloatingPanel = true
+            panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             panel.hidesOnDeactivate = false
             panel.isReleasedWhenClosed = false
@@ -278,7 +324,7 @@ final class RecordingHUDController {
         let size = panel.frame.size
         let origin = NSPoint(
             x: visibleFrame.midX - size.width / 2,
-            y: visibleFrame.maxY - size.height - 24
+            y: visibleFrame.maxY - size.height - 8
         )
         panel.setFrameOrigin(origin)
     }
@@ -286,65 +332,134 @@ final class RecordingHUDController {
 
 private struct CanvasToolbarView: View {
     @EnvironmentObject private var appState: AppState
+    private let colorSwatches = ["#EC6579", "#0A84FF", "#34C759", "#FF9F0A", "#1C1C1E"]
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal")
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
-                .help("Drag canvas toolbar")
+        HStack(spacing: 7) {
+            dragHandle
 
-            ForEach(AnnotationTool.canvasTools) { tool in
-                Button {
-                    appState.selectCanvasTool(tool)
-                } label: {
-                    Image(systemName: tool.symbolName)
-                        .frame(width: 16, height: 16)
+            HStack(spacing: 4) {
+                ForEach(AnnotationTool.canvasTools) { tool in
+                    toolbarButton(
+                        system: tool.symbolName,
+                        help: toolHelp(tool),
+                        isActive: appState.selectedAnnotationTool == tool
+                    ) {
+                        appState.selectCanvasTool(tool)
+                    }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(appState.selectedAnnotationTool == tool ? .accentColor : nil)
-                .help(toolHelp(tool))
             }
 
-            Divider()
-                .frame(height: 22)
+            separator
 
-            Button {
+            HStack(spacing: 5) {
+                ForEach(colorSwatches, id: \.self) { hex in
+                    colorSwatch(hex)
+                }
+                CanvasColorWell(colorHex: Binding(
+                    get: { appState.canvasColorHex },
+                    set: { appState.selectCanvasColor(hex: $0) }
+                ))
+                .frame(width: 28, height: 28)
+                .help("Choose annotation color")
+            }
+
+            separator
+
+            toolbarButton(
+                system: "trash",
+                help: "Delete selected annotation",
+                isEnabled: appState.selectedAnnotationStrokeID != nil
+            ) {
                 appState.deleteSelectedAnnotation()
-            } label: {
-                Image(systemName: "trash")
-                    .frame(width: 16, height: 16)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(appState.selectedAnnotationStrokeID == nil)
-            .help("Delete selected annotation")
 
-            Button {
+            toolbarButton(
+                system: "eraser",
+                help: "Clear canvas",
+                isEnabled: !appState.visibleAnnotationStrokes.isEmpty
+            ) {
                 appState.clearAnnotations()
-            } label: {
-                Image(systemName: "eraser")
-                    .frame(width: 16, height: 16)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(appState.visibleAnnotationStrokes.isEmpty)
-            .help("Clear canvas")
 
-            Button {
+            toolbarButton(system: "xmark", help: "Exit canvas mode") {
                 appState.setCanvasMode(false)
-            } label: {
-                Image(systemName: "xmark")
-                    .frame(width: 16, height: 16)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help("Exit canvas mode")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(SynColor.materialBorder, lineWidth: 1)
+        )
+        .synShadow(0)
+    }
+
+    private var dragHandle: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(SynColor.text3)
+            .frame(width: 24, height: 28)
+            .contentShape(Rectangle())
+            .help("Drag canvas toolbar")
+    }
+
+    private var separator: some View {
+        Rectangle()
+            .fill(SynColor.hairline)
+            .frame(width: 1, height: 24)
+            .padding(.horizontal, 2)
+    }
+
+    private func toolbarButton(
+        system: String,
+        help: String,
+        isActive: Bool = false,
+        isEnabled: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        let fill = isActive ? SynColor.accentTint : SynColor.surface2
+        let stroke = isActive ? SynColor.accentRing : SynColor.hairline
+        let foreground = isActive ? SynColor.accentDeep : SynColor.text2
+
+        return Button(action: action) {
+            Image(systemName: system)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(foreground)
+                .frame(width: 30, height: 28)
+                .background(fill, in: shape)
+                .overlay(shape.strokeBorder(stroke, lineWidth: isActive ? 1.5 : 1))
+                .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.42)
+        .help(help)
+    }
+
+    private func colorSwatch(_ hex: String) -> some View {
+        let selected = appState.canvasColorHex.uppercased() == hex
+        let swatch = RoundedRectangle(cornerRadius: 6, style: .continuous)
+        let color = Color(nsColor: NSColor(hex: hex))
+
+        return Button {
+            appState.selectCanvasColor(hex: hex)
+        } label: {
+            swatch
+                .fill(color)
+                .frame(width: 20, height: 20)
+                .overlay(swatch.strokeBorder(SynColor.materialBorder, lineWidth: 1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(selected ? SynColor.accentDeep : .clear, lineWidth: 2)
+                        .frame(width: 26, height: 26)
+                )
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.plain)
+        .help("Use \(hex)")
     }
 
     private func toolHelp(_ tool: AnnotationTool) -> String {
@@ -352,6 +467,73 @@ private struct CanvasToolbarView: View {
             return "\(tool.title) (Right Shift + \(shortcut))"
         }
         return tool.title
+    }
+}
+
+private struct CanvasColorWell: NSViewRepresentable {
+    @Binding var colorHex: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(colorHex: $colorHex)
+    }
+
+    func makeNSView(context: Context) -> CanvasColorWellContainer {
+        let container = CanvasColorWellContainer()
+        container.colorWell.isBordered = false
+        container.colorWell.target = context.coordinator
+        container.colorWell.action = #selector(Coordinator.colorChanged(_:))
+        return container
+    }
+
+    func updateNSView(_ container: CanvasColorWellContainer, context: Context) {
+        let color = NSColor(hex: colorHex)
+        if container.colorWell.color != color {
+            container.colorWell.color = color
+        }
+    }
+
+    final class Coordinator: NSObject {
+        @Binding private var colorHex: String
+
+        init(colorHex: Binding<String>) {
+            _colorHex = colorHex
+        }
+
+        @objc func colorChanged(_ sender: NSColorWell) {
+            colorHex = sender.color.synToolbarHexString
+        }
+    }
+}
+
+private final class CanvasColorWellContainer: NSView {
+    let colorWell = NSColorWell(frame: .zero)
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        addSubview(colorWell)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 28, height: 28)
+    }
+
+    override func layout() {
+        super.layout()
+        colorWell.frame = bounds.insetBy(dx: 4, dy: 4)
+    }
+}
+
+private extension NSColor {
+    var synToolbarHexString: String {
+        let color = usingColorSpace(.sRGB) ?? self
+        let red = max(0, min(255, Int(round(color.redComponent * 255))))
+        let green = max(0, min(255, Int(round(color.greenComponent * 255))))
+        let blue = max(0, min(255, Int(round(color.blueComponent * 255))))
+        return String(format: "#%02X%02X%02X", red, green, blue)
     }
 }
 
@@ -365,17 +547,25 @@ final class CanvasToolbarController {
     private init() {}
 
     func show(appState: AppState) {
+        guard appState.isCanvasModeEnabled else {
+            hide()
+            return
+        }
         self.appState = appState
+        AnnotationOverlayController.shared.update(appState: appState)
 
         if panel == nil {
             let hostingView = NSHostingView(rootView: CanvasToolbarView().environmentObject(appState))
             let panel = CanvasToolbarPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 330, height: 56),
+                contentRect: NSRect(x: 0, y: 0, width: 548, height: 52),
                 styleMask: [.nonactivatingPanel, .hudWindow],
                 backing: .buffered,
                 defer: false
             )
             panel.contentView = hostingView
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = false
             panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             panel.hidesOnDeactivate = false
@@ -390,10 +580,13 @@ final class CanvasToolbarController {
     }
 
     func update(appState: AppState) {
+        guard appState.isCanvasModeEnabled else {
+            hide()
+            return
+        }
+        AnnotationOverlayController.shared.update(appState: appState)
         guard panel != nil else {
-            if appState.isCanvasModeEnabled {
-                show(appState: appState)
-            }
+            show(appState: appState)
             return
         }
         self.appState = appState

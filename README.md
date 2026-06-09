@@ -27,6 +27,7 @@ Optional modes:
 
 ## Documents
 
+- [Design system](docs/DESIGN_SYSTEM.md)
 - [Specification corroboration](docs/SPEC_CORROBORATION.md)
 - [Implementation audit](docs/IMPLEMENTATION_AUDIT.md)
 - [Testing checklist](docs/TESTING_CHECKLIST.md)
