@@ -87,8 +87,13 @@ menu-bar glyph states · Dark-mode check.
 - [x] **Foundation** — tokens, type scale, spacing, radii, shadows, and core
       primitives (status dots/badges, key caps, card, button styles) →
       `Syn/Support/DesignSystem.swift` (builds clean)
-- [ ] Surface re-skins (incremental): Overview window · Recording HUD ·
-      Capture picker · Canvas toolbar · Settings · selection overlays · menu bar
+- [x] Surface re-skins: Overview window · Recording HUD · Capture picker
+      (floating frosted panel, sectioned per mockup, number-key shortcuts) ·
+      Canvas toolbar · Settings
+      (card layout) · selection overlays (AppKit chrome in
+      `SynOverlayInk`/`SynOverlayChrome`: rose stroke + handles, dimension chip,
+      Confirm ⏎ / Cancel esc bar) · Chrome tab picker · status banner ·
+      permissions checklist · menu bar
 - [ ] App icon + asset catalog + menu-bar template glyph
 
 > Implementation note: the Xcode project uses explicit file references (no

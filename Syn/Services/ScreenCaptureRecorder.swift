@@ -29,12 +29,32 @@ enum ScreenCaptureRecorderError: LocalizedError {
     }
 }
 
+/// The live-rendered (clicks burned during capture) sibling of the raw recording.
+/// When usable, stop-time finalize is a passthrough remux instead of a re-encode.
+struct LiveRenderArtifact {
+    var segmentURLs: [URL]
+    var renderedClickCount: Int
+    var usable: Bool
+}
+
 final class ScreenCaptureRecorder {
     private var request: CaptureRequest?
     private var activeSegment: CaptureSegment?
     private var segmentURLs: [URL] = []
     private var segmentIndex = 0
     private(set) var sourceMetadata: CaptureSourceMetadata?
+    private var clickFeed: LiveClickFeed?
+    private var frameSampler: LiveFrameSampler?
+    private(set) var liveFrameArtifact: LiveFrameSamplingArtifact?
+    private var liveSegmentURLs: [URL] = []
+    private var liveRenderedClickCount = 0
+    private var liveRenderFailed = false
+    private(set) var liveRenderArtifact: LiveRenderArtifact?
+
+    /// Modes whose final framing equals the raw capture framing (plus overlays), so click
+    /// bubbles can be burned live into a parallel encode. Dynamic-crop and multi-stream
+    /// modes keep the offline render.
+    private static let liveRenderModes: Set<CaptureMode> = [.screen, .region, .selectedWindow, .chromeTab]
 
     func start(request: CaptureRequest) async throws {
         guard #available(macOS 15.0, *) else {
@@ -44,6 +64,21 @@ final class ScreenCaptureRecorder {
         self.request = request
         segmentURLs = []
         segmentIndex = 0
+        liveSegmentURLs = []
+        liveRenderedClickCount = 0
+        liveRenderFailed = false
+        liveRenderArtifact = nil
+        liveFrameArtifact = nil
+        if Self.liveRenderModes.contains(request.mode) {
+            let feed = LiveClickFeed()
+            await MainActor.run { feed.startMonitoring() }
+            clickFeed = feed
+            frameSampler = LiveFrameSampler(
+                stagingDirectory: request.packet.rawSegmentsURL
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("live-frames", isDirectory: true)
+            )
+        }
         try await startNewSegment()
     }
 
@@ -53,6 +88,8 @@ final class ScreenCaptureRecorder {
         }
 
         try await activeSegment.stop()
+        collectLiveRenderOutcome(from: activeSegment)
+        frameSampler?.endSegment()
         self.activeSegment = nil
     }
 
@@ -67,12 +104,43 @@ final class ScreenCaptureRecorder {
     func stop() async throws -> [URL] {
         if let activeSegment {
             try await activeSegment.stop()
+            collectLiveRenderOutcome(from: activeSegment)
             self.activeSegment = nil
         }
+
+        if let clickFeed {
+            await MainActor.run { clickFeed.stopMonitoring() }
+        }
+        if let frameSampler {
+            liveFrameArtifact = await frameSampler.finish()
+        }
+        frameSampler = nil
+        if clickFeed != nil {
+            liveRenderArtifact = LiveRenderArtifact(
+                segmentURLs: liveSegmentURLs,
+                renderedClickCount: liveRenderedClickCount,
+                usable: !liveRenderFailed && !liveSegmentURLs.isEmpty && liveSegmentURLs.count == segmentURLs.count
+            )
+        }
+        clickFeed = nil
 
         let urls = segmentURLs
         request = nil
         return urls
+    }
+
+    private func collectLiveRenderOutcome(from segment: CaptureSegment) {
+        guard #available(macOS 15.0, *),
+              let screenSegment = segment as? ScreenCaptureSegment,
+              let outcome = screenSegment.liveRenderOutcome else {
+            return
+        }
+        if outcome.succeeded, let url = outcome.url {
+            liveSegmentURLs.append(url)
+            liveRenderedClickCount += outcome.renderedClickCount
+        } else {
+            liveRenderFailed = true
+        }
     }
 
     @available(macOS 15.0, *)
@@ -91,7 +159,29 @@ final class ScreenCaptureRecorder {
         let segment: CaptureSegment
         switch resolved.source {
         case .single(let filter, let configuration):
-            segment = ScreenCaptureSegment(filter: filter, configuration: configuration, outputURL: outputURL)
+            var liveRenderer: LiveOverlayRecorder?
+            if let clickFeed {
+                // Live segments live OUTSIDE raw/segments/ so retry's raw-segment merge
+                // never picks them up by accident.
+                let liveDirectory = request.packet.rawSegmentsURL
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("live-render", isDirectory: true)
+                try? FileManager.default.createDirectory(at: liveDirectory, withIntermediateDirectories: true)
+                liveRenderer = LiveOverlayRecorder(
+                    outputURL: liveDirectory.appendingPathComponent(String(format: "segment-%03d.mp4", segmentIndex)),
+                    width: configuration.width,
+                    height: configuration.height,
+                    capture: resolved.metadata,
+                    clickFeed: clickFeed,
+                    frameSampler: frameSampler
+                )
+            }
+            segment = ScreenCaptureSegment(
+                filter: filter,
+                configuration: configuration,
+                outputURL: outputURL,
+                liveRenderer: liveRenderer
+            )
         case .allScreens(let displays):
             segment = AllScreensCaptureSegment(displaySources: displays, outputURL: outputURL)
         }
@@ -592,11 +682,19 @@ private final class ScreenCaptureSegment: NSObject, @unchecked Sendable, Capture
     private var startContinuation: CheckedContinuation<Void, Error>?
     private var finishContinuation: CheckedContinuation<Void, Error>?
     private let callbackTimeout: TimeInterval = 5
+    private let liveRenderer: LiveOverlayRecorder?
+    private(set) var liveRenderOutcome: LiveOverlayRecorder.Outcome?
 
-    init(filter: SCContentFilter, configuration: SCStreamConfiguration, outputURL: URL) {
+    init(
+        filter: SCContentFilter,
+        configuration: SCStreamConfiguration,
+        outputURL: URL,
+        liveRenderer: LiveOverlayRecorder? = nil
+    ) {
         self.filter = filter
         self.configuration = configuration
         self.outputURL = outputURL
+        self.liveRenderer = liveRenderer
     }
 
     func start() async throws {
@@ -610,6 +708,18 @@ private final class ScreenCaptureSegment: NSObject, @unchecked Sendable, Capture
         let recordingOutput = SCRecordingOutput(configuration: recordingConfiguration, delegate: self)
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
         try stream.addRecordingOutput(recordingOutput)
+
+        // The live overlay renderer taps the same stream's frames; the raw recording
+        // output above is untouched. If the tap cannot be attached, the segment simply
+        // records raw and the offline render runs as before.
+        if let liveRenderer {
+            do {
+                try liveRenderer.prepare()
+                try stream.addStreamOutput(liveRenderer, type: .screen, sampleHandlerQueue: liveRenderer.handlerQueue)
+            } catch {
+                liveRenderer.markFailed("Could not attach live overlay output: \(error.localizedDescription)")
+            }
+        }
 
         self.stream = stream
         self.recordingOutput = recordingOutput
@@ -672,7 +782,14 @@ private final class ScreenCaptureSegment: NSObject, @unchecked Sendable, Capture
             timeout.cancel()
         } catch {
             timeout.cancel()
+            if let liveRenderer {
+                liveRenderOutcome = await liveRenderer.finish()
+            }
             throw error
+        }
+
+        if let liveRenderer {
+            liveRenderOutcome = await liveRenderer.finish()
         }
 
         self.stream = nil
@@ -710,6 +827,420 @@ private final class ScreenCaptureSegment: NSObject, @unchecked Sendable, Capture
         if let finishContinuation {
             finishContinuation.resume(throwing: error)
             self.finishContinuation = nil
+        }
+    }
+}
+
+/// Records left mouse-downs (global screen point + host-clock time) while a capture runs.
+/// Host-clock times compare directly against ScreenCaptureKit sample-buffer timestamps,
+/// so the live renderer knows exactly which frames a click bubble spans.
+final class LiveClickFeed {
+    struct Click {
+        var hostSeconds: Double
+        var globalPoint: CGPoint
+    }
+
+    private var monitors: [Any] = []
+    private let lock = NSLock()
+    private var clicks: [Click] = []
+
+    @MainActor
+    func startMonitoring() {
+        stopMonitoringLocked()
+        let record: (NSEvent) -> Void = { [weak self] _ in
+            guard let self else { return }
+            let click = Click(hostSeconds: CACurrentMediaTime(), globalPoint: NSEvent.mouseLocation)
+            self.lock.lock()
+            self.clicks.append(click)
+            if self.clicks.count > 4096 {
+                self.clicks.removeFirst(self.clicks.count - 4096)
+            }
+            self.lock.unlock()
+        }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown], handler: record) {
+            monitors.append(global)
+        }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown], handler: { event in
+            record(event)
+            return event
+        }) {
+            monitors.append(local)
+        }
+    }
+
+    @MainActor
+    func stopMonitoring() {
+        stopMonitoringLocked()
+    }
+
+    private func stopMonitoringLocked() {
+        monitors.forEach { NSEvent.removeMonitor($0) }
+        monitors = []
+    }
+
+    /// Clicks whose bubble animation is still active at the given frame time.
+    func activeClicks(atHostSeconds time: Double, window: Double) -> [Click] {
+        lock.lock()
+        defer { lock.unlock() }
+        return clicks.filter { time - $0.hostSeconds >= 0 && time - $0.hostSeconds <= window }
+    }
+}
+
+/// Burns Syn's click bubbles into a parallel H.264 encode WHILE the capture runs, so
+/// stopping a recording only needs a passthrough remux instead of a full re-encode.
+///
+/// Frames with no active bubble are forwarded to the hardware encoder untouched
+/// (zero-copy); only the ~20 frames around each click are copied and composited.
+/// The raw SCRecordingOutput recording is completely unaffected — on any failure the
+/// offline render runs exactly as before.
+@available(macOS 15.0, *)
+final class LiveOverlayRecorder: NSObject, @unchecked Sendable, SCStreamOutput {
+    struct Outcome {
+        var url: URL?
+        var renderedClickCount: Int
+        var succeeded: Bool
+        var note: String?
+    }
+
+    private static let bubbleWindowSeconds: Double = 0.65
+
+    let handlerQueue = DispatchQueue(label: "syn.live-overlay-recorder", qos: .userInitiated)
+
+    private let outputURL: URL
+    private let width: Int
+    private let height: Int
+    private let capture: CaptureSourceMetadata
+    private let clickFeed: LiveClickFeed
+    private let frameSampler: LiveFrameSampler?
+
+    private var writer: AVAssetWriter?
+    private var writerInput: AVAssetWriterInput?
+    private var sessionStarted = false
+    private var appendedFrameCount = 0
+    private var renderedClickKeys = Set<Int>()
+    private var failureNote: String?
+    private var finished = false
+    private var pixelBufferPool: CVPixelBufferPool?
+    // ScreenCaptureKit only delivers frames when the screen CHANGES, so on a quiet screen
+    // the last appended frame can be far in the past. Keeping it lets finish() re-append it
+    // at stop time so the video track spans the whole recording like the raw file does.
+    private var lastAppendedPixelBuffer: CVPixelBuffer?
+    private var lastAppendedPTS = CMTime.invalid
+
+    init(
+        outputURL: URL,
+        width: Int,
+        height: Int,
+        capture: CaptureSourceMetadata,
+        clickFeed: LiveClickFeed,
+        frameSampler: LiveFrameSampler? = nil
+    ) {
+        self.outputURL = outputURL
+        self.width = width
+        self.height = height
+        self.capture = capture
+        self.clickFeed = clickFeed
+        self.frameSampler = frameSampler
+    }
+
+    func prepare() throws {
+        try? FileManager.default.removeItem(at: outputURL)
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: width,
+                AVVideoHeightKey: height
+            ]
+        )
+        input.expectsMediaDataInRealTime = true
+        guard writer.canAdd(input) else {
+            throw VideoUtilitiesError.noExportSession
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw writer.error ?? VideoUtilitiesError.exportFailed("Live overlay writer could not start.")
+        }
+        self.writer = writer
+        self.writerInput = input
+    }
+
+    func markFailed(_ note: String) {
+        handlerQueue.async {
+            self.failureNote = note
+        }
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .screen,
+              failureNote == nil,
+              !finished,
+              let writer,
+              let writerInput,
+              sampleBuffer.isValid,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return
+        }
+
+        // Only complete frames carry display content.
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              let statusRaw = attachments.first?[.status] as? Int,
+              SCFrameStatus(rawValue: statusRaw) == .complete else {
+            return
+        }
+
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        frameSampler?.ingest(pixelBuffer: pixelBuffer, ptsSeconds: presentationTime.seconds)
+        if !sessionStarted {
+            guard CVPixelBufferGetWidth(pixelBuffer) == width,
+                  CVPixelBufferGetHeight(pixelBuffer) == height,
+                  CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else {
+                failureNote = "Live overlay frames did not match the expected size/format."
+                return
+            }
+            writer.startSession(atSourceTime: presentationTime)
+            sessionStarted = true
+        }
+
+        guard writerInput.isReadyForMoreMediaData else {
+            return // drop a frame rather than stall ScreenCaptureKit's buffer pool
+        }
+
+        let frameHostSeconds = presentationTime.seconds
+        let activeClicks = clickFeed.activeClicks(atHostSeconds: frameHostSeconds, window: Self.bubbleWindowSeconds)
+
+        if activeClicks.isEmpty {
+            if writerInput.append(sampleBuffer) {
+                appendedFrameCount += 1
+                lastAppendedPixelBuffer = pixelBuffer
+                lastAppendedPTS = presentationTime
+            } else {
+                failureNote = "Live overlay writer rejected a frame: \(writer.error?.localizedDescription ?? "unknown error")"
+            }
+            return
+        }
+
+        guard let composited = compositeBubbles(
+            onto: pixelBuffer,
+            clicks: activeClicks,
+            frameHostSeconds: frameHostSeconds
+        ) else {
+            // Compositing failed; keep the unmodified frame so the video stays continuous.
+            if writerInput.append(sampleBuffer) {
+                appendedFrameCount += 1
+            }
+            return
+        }
+
+        var timing = CMSampleTimingInfo()
+        CMSampleBufferGetSampleTimingInfo(sampleBuffer, at: 0, timingInfoOut: &timing)
+        var formatDescription: CMFormatDescription?
+        CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: composited,
+            formatDescriptionOut: &formatDescription
+        )
+        guard let formatDescription else {
+            return
+        }
+        var compositedSample: CMSampleBuffer?
+        CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: composited,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &compositedSample
+        )
+        if let compositedSample, writerInput.append(compositedSample) {
+            appendedFrameCount += 1
+            lastAppendedPixelBuffer = composited
+            lastAppendedPTS = presentationTime
+            for click in activeClicks {
+                renderedClickKeys.insert(Int((click.hostSeconds * 1000).rounded()))
+            }
+        }
+    }
+
+    /// Re-appends the last frame at stop time so the video track covers the full recording
+    /// even when the screen was static at the end (ScreenCaptureKit emits no frames then).
+    private func extendFinalFrameToStopTime() {
+        guard let writerInput,
+              writerInput.isReadyForMoreMediaData,
+              let lastAppendedPixelBuffer,
+              lastAppendedPTS.isValid else {
+            return
+        }
+        let stopSeconds = CACurrentMediaTime()
+        guard stopSeconds - lastAppendedPTS.seconds > 0.05 else {
+            return
+        }
+        var timing = CMSampleTimingInfo(
+            duration: .invalid,
+            presentationTimeStamp: CMTime(seconds: stopSeconds, preferredTimescale: 1_000_000_000),
+            decodeTimeStamp: .invalid
+        )
+        var formatDescription: CMFormatDescription?
+        CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: lastAppendedPixelBuffer,
+            formatDescriptionOut: &formatDescription
+        )
+        guard let formatDescription else {
+            return
+        }
+        var sample: CMSampleBuffer?
+        CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: lastAppendedPixelBuffer,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &sample
+        )
+        if let sample {
+            _ = writerInput.append(sample)
+        }
+    }
+
+    private func compositeBubbles(
+        onto source: CVPixelBuffer,
+        clicks: [LiveClickFeed.Click],
+        frameHostSeconds: Double
+    ) -> CVPixelBuffer? {
+        if pixelBufferPool == nil {
+            let poolAttributes: [String: Any] = [kCVPixelBufferPoolMinimumBufferCountKey as String: 3]
+            let bufferAttributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ]
+            CVPixelBufferPoolCreate(nil, poolAttributes as CFDictionary, bufferAttributes as CFDictionary, &pixelBufferPool)
+        }
+        guard let pixelBufferPool else {
+            return nil
+        }
+
+        var destination: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pixelBufferPool, &destination)
+        guard let destination else {
+            return nil
+        }
+
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(destination, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(destination, [])
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+        }
+
+        guard let sourceBase = CVPixelBufferGetBaseAddress(source),
+              let destinationBase = CVPixelBufferGetBaseAddress(destination) else {
+            return nil
+        }
+
+        let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(source)
+        let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(destination)
+        if sourceBytesPerRow == destinationBytesPerRow {
+            memcpy(destinationBase, sourceBase, destinationBytesPerRow * height)
+        } else {
+            let rowBytes = min(sourceBytesPerRow, destinationBytesPerRow)
+            for row in 0..<height {
+                memcpy(
+                    destinationBase + row * destinationBytesPerRow,
+                    sourceBase + row * sourceBytesPerRow,
+                    rowBytes
+                )
+            }
+        }
+
+        guard let context = CGContext(
+            data: destinationBase,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: destinationBytesPerRow,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else {
+            return nil
+        }
+
+        let presentationSize = CGSize(width: CGFloat(width), height: CGFloat(height))
+        for click in clicks {
+            guard let videoPoint = VideoUtilities.mapGlobalPointToVideo(
+                click.globalPoint,
+                capture: capture,
+                presentationSize: presentationSize,
+                padding: 0
+            ) else {
+                continue
+            }
+            let progress = min(1, max(0, (frameHostSeconds - click.hostSeconds) / Self.bubbleWindowSeconds))
+            drawBubble(in: context, at: videoPoint, progress: progress)
+        }
+
+        return destination
+    }
+
+    private func drawBubble(in context: CGContext, at videoPoint: CGPoint, progress: Double) {
+        // videoPoint is top-left-origin video pixels; CGContext origin is bottom-left.
+        let center = CGPoint(x: videoPoint.x, y: CGFloat(height) - videoPoint.y)
+        let scale = max(1, CGFloat(width) / 1920)
+        let baseRadius = 9 * scale
+        let radius = baseRadius + CGFloat(progress) * 14 * scale
+        let alpha = CGFloat(1 - progress)
+
+        // Syn rose (#EC6579) ring with a soft fill — the same visual as the offline bubbles.
+        let ring = CGRect(
+            x: center.x - radius,
+            y: center.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )
+        context.setFillColor(CGColor(srgbRed: 236 / 255, green: 101 / 255, blue: 121 / 255, alpha: 0.18 * alpha))
+        context.fillEllipse(in: ring)
+        context.setStrokeColor(CGColor(srgbRed: 236 / 255, green: 101 / 255, blue: 121 / 255, alpha: alpha))
+        context.setLineWidth(3 * scale)
+        context.strokeEllipse(in: ring)
+    }
+
+    func finish() async -> Outcome {
+        await withCheckedContinuation { continuation in
+            handlerQueue.async {
+                self.finished = true
+                guard let writer = self.writer else {
+                    continuation.resume(returning: Outcome(
+                        url: nil,
+                        renderedClickCount: 0,
+                        succeeded: false,
+                        note: self.failureNote ?? "Live overlay writer was never created."
+                    ))
+                    return
+                }
+                guard self.failureNote == nil, self.sessionStarted, self.appendedFrameCount > 0 else {
+                    writer.cancelWriting()
+                    try? FileManager.default.removeItem(at: self.outputURL)
+                    continuation.resume(returning: Outcome(
+                        url: nil,
+                        renderedClickCount: 0,
+                        succeeded: false,
+                        note: self.failureNote ?? "Live overlay writer received no frames."
+                    ))
+                    return
+                }
+                self.extendFinalFrameToStopTime()
+                self.writerInput?.markAsFinished()
+                writer.finishWriting {
+                    let succeeded = writer.status == .completed
+                    continuation.resume(returning: Outcome(
+                        url: succeeded ? self.outputURL : nil,
+                        renderedClickCount: self.renderedClickKeys.count,
+                        succeeded: succeeded,
+                        note: succeeded ? nil : (writer.error?.localizedDescription ?? "Live overlay writer failed to finish.")
+                    ))
+                }
+            }
         }
     }
 }

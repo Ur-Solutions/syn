@@ -20,28 +20,44 @@ final class RegionSelectionController {
 
     private init() {}
 
-    func begin(initialSelection: CGRect? = nil, completion: @escaping (RegionSelection?) -> Void) {
+    func begin(
+        initialSelection: CGRect? = nil,
+        initialDisplayID: CGDirectDisplayID? = nil,
+        completion: @escaping (RegionSelection?) -> Void
+    ) {
         cancel()
         self.completion = completion
         fixtureSelection = nil
         fixtureMovedSelection = false
 
+        let prefillScreen = initialDisplayID.flatMap { id in
+            NSScreen.screens.first(where: { $0.displayID == id })
+        } ?? NSScreen.main ?? NSScreen.screens.first
+
         for screen in NSScreen.screens {
-            if let initialSelection, screen == (NSScreen.main ?? NSScreen.screens.first) {
+            var screenInitialSelection: CGRect?
+            if let initialSelection, screen == prefillScreen {
+                let local = CGRect(
+                    x: min(max(initialSelection.minX, 0), max(0, screen.frame.width - initialSelection.width)),
+                    y: min(max(initialSelection.minY, 0), max(0, screen.frame.height - initialSelection.height)),
+                    width: min(initialSelection.width, screen.frame.width),
+                    height: min(initialSelection.height, screen.frame.height)
+                )
+                screenInitialSelection = local
                 fixtureSelection = RegionSelection(
-                    rect: initialSelection,
+                    rect: local,
                     globalRect: CGRect(
-                        x: screen.frame.minX + initialSelection.minX,
-                        y: screen.frame.minY + initialSelection.minY,
-                        width: initialSelection.width,
-                        height: initialSelection.height
+                        x: screen.frame.minX + local.minX,
+                        y: screen.frame.minY + local.minY,
+                        width: local.width,
+                        height: local.height
                     ),
                     displayID: screen.displayID
                 )
             }
             let view = RegionSelectionView(
                 screen: screen,
-                initialSelection: initialSelection,
+                initialSelection: screenInitialSelection,
                 onFixtureMove: { [weak self] moved in
                     self?.fixtureMovedSelection = self?.fixtureMovedSelection == true || moved
                 },
@@ -82,9 +98,10 @@ final class RegionSelectionController {
 
     private func installKeyMonitor() {
         removeKeyMonitor()
-        // A local key monitor delivers Enter/Escape regardless of which display's
-        // borderless overlay window is key. Escape cancels; Enter confirms whichever
-        // overlay currently holds a drawn selection.
+        // A local key monitor delivers keys regardless of which display's
+        // borderless overlay window is key. Escape cancels; Enter confirms
+        // whichever overlay currently holds a drawn selection; arrows nudge
+        // (move) or resize (with Option) that selection.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else {
                 return event
@@ -97,6 +114,18 @@ final class RegionSelectionController {
                 for window in self.windows {
                     if let view = window.contentView as? RegionSelectionView,
                        view.confirmSelectionIfPresent() {
+                        return nil
+                    }
+                }
+                return event
+            case 123, 124, 125, 126: // Arrow keys
+                let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
+                let resize = event.modifierFlags.contains(.option)
+                let dx: CGFloat = event.keyCode == 123 ? -step : (event.keyCode == 124 ? step : 0)
+                let dy: CGFloat = event.keyCode == 125 ? -step : (event.keyCode == 126 ? step : 0)
+                for window in self.windows {
+                    if let view = window.contentView as? RegionSelectionView,
+                       view.nudgeSelection(dx: dx, dy: dy, resize: resize) {
                         return nil
                     }
                 }
@@ -149,10 +178,19 @@ private final class RegionSelectionPanelWindow: NSWindow {
 }
 
 private final class RegionSelectionView: NSView {
+    private enum Handle: CaseIterable {
+        case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
+    }
+
     private enum DragMode {
         case drawing
         case moving
+        case resizing(Handle)
     }
+
+    private static let minimumSelectionEdge: CGFloat = 20
+    private static let handleVisualSize: CGFloat = 8
+    private static let handleHitSize: CGFloat = 18
 
     private let screen: NSScreen
     private let onFixtureMove: (Bool) -> Void
@@ -162,6 +200,13 @@ private final class RegionSelectionView: NSView {
     private var dragStartRect: CGRect?
     private var currentDragRect: CGRect?
     private var selectedRect: CGRect?
+
+    private var barItems: [SynOverlayChrome.BarItem] {
+        [
+            .init(title: "Confirm", keycap: "⏎", style: .primary),
+            .init(title: "Cancel", keycap: "esc", style: .neutral)
+        ]
+    }
 
     init(
         screen: NSScreen,
@@ -183,8 +228,12 @@ private final class RegionSelectionView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
+    var hasSelection: Bool { selectedRect != nil }
+
+    // MARK: Drawing
+
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.black.withAlphaComponent(0.35).setFill()
+        SynOverlayInk.scrim.setFill()
         bounds.fill()
 
         let visibleRect = currentDragRect ?? selectedRect
@@ -192,49 +241,194 @@ private final class RegionSelectionView: NSView {
         if let visibleRect {
             NSColor.clear.setFill()
             visibleRect.fill(using: .clear)
-            NSColor.controlAccentColor.setStroke()
+
+            if isActivelyShaping {
+                drawThirdsGrid(in: visibleRect)
+            }
+
+            // White halo behind the rose stroke keeps the frame legible on dark content.
+            let haloPath = NSBezierPath(rect: visibleRect.insetBy(dx: -1.5, dy: -1.5))
+            haloPath.lineWidth = 3
+            SynOverlayInk.halo.setStroke()
+            haloPath.stroke()
+
             let path = NSBezierPath(rect: visibleRect)
             path.lineWidth = 2
+            SynOverlayInk.accent.setStroke()
             path.stroke()
 
-            let label = "\(Int(visibleRect.width)) x \(Int(visibleRect.height))"
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .medium),
-                .foregroundColor: NSColor.white
-            ]
-            label.draw(at: CGPoint(x: visibleRect.minX + 8, y: visibleRect.maxY + 8), withAttributes: attributes)
-
-            if let selectedRect, currentDragRect == nil {
-                drawButtons(for: selectedRect)
+            if selectedRect != nil, !isDrawingNewRect {
+                drawHandles(for: visibleRect)
             }
+
+            drawDimensionChip(for: visibleRect)
         } else {
-            let label = "Drag a region. Confirm to start. Esc cancels."
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 18, weight: .semibold),
-                .foregroundColor: NSColor.white
-            ]
-            let size = label.size(withAttributes: attributes)
-            label.draw(
-                at: CGPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2),
-                withAttributes: attributes
+            SynOverlayChrome.drawMessageCard(
+                title: "Drag to select a region",
+                subtitle: "Return confirms · Esc cancels · Arrows nudge · ⌥ Arrows resize",
+                center: CGPoint(x: bounds.midX, y: bounds.midY)
             )
         }
+
+        if selectedRect != nil, dragMode == nil {
+            SynOverlayChrome.drawBar(controlBarLayout(), items: barItems)
+        }
     }
+
+    private var isDrawingNewRect: Bool {
+        if case .drawing = dragMode { return true }
+        return false
+    }
+
+    private var isActivelyShaping: Bool {
+        switch dragMode {
+        case .drawing, .resizing: return true
+        default: return false
+        }
+    }
+
+    private func drawThirdsGrid(in rect: CGRect) {
+        guard rect.width > 90, rect.height > 90 else {
+            return
+        }
+        let path = NSBezierPath()
+        let fractions: [CGFloat] = [1.0 / 3.0, 2.0 / 3.0]
+        for fraction in fractions {
+            path.move(to: CGPoint(x: rect.minX + rect.width * fraction, y: rect.minY))
+            path.line(to: CGPoint(x: rect.minX + rect.width * fraction, y: rect.maxY))
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY + rect.height * fraction))
+            path.line(to: CGPoint(x: rect.maxX, y: rect.minY + rect.height * fraction))
+        }
+        path.lineWidth = 1
+        SynOverlayInk.grid.setStroke()
+        path.stroke()
+    }
+
+    private func drawHandles(for rect: CGRect) {
+        for handle in Handle.allCases {
+            let center = handleCenter(handle, in: rect)
+            let visual = CGRect(
+                x: center.x - Self.handleVisualSize / 2,
+                y: center.y - Self.handleVisualSize / 2,
+                width: Self.handleVisualSize,
+                height: Self.handleVisualSize
+            )
+            let path = NSBezierPath(roundedRect: visual, xRadius: 2, yRadius: 2)
+            NSColor.white.setFill()
+            path.fill()
+            SynOverlayInk.accent.setStroke()
+            path.lineWidth = 1.5
+            path.stroke()
+        }
+    }
+
+    private func drawDimensionChip(for rect: CGRect) {
+        let text = "\(Int(rect.width)) × \(Int(rect.height))"
+        let chipSize = SynOverlayChrome.chipSize(text: text)
+        var chipY = rect.maxY + 10
+        if chipY + chipSize.height > bounds.maxY - 4 {
+            chipY = rect.maxY - chipSize.height - 10
+        }
+        SynOverlayChrome.drawChip(text: text, centerX: rect.midX, minY: chipY)
+    }
+
+    private func controlBarLayout() -> SynOverlayChrome.BarLayout {
+        SynOverlayChrome.barLayout(items: barItems, centerX: bounds.midX, bottomY: bounds.minY + 56)
+    }
+
+    // MARK: Geometry
+
+    private func handleCenter(_ handle: Handle, in rect: CGRect) -> CGPoint {
+        switch handle {
+        case .topLeft: return CGPoint(x: rect.minX, y: rect.maxY)
+        case .top: return CGPoint(x: rect.midX, y: rect.maxY)
+        case .topRight: return CGPoint(x: rect.maxX, y: rect.maxY)
+        case .right: return CGPoint(x: rect.maxX, y: rect.midY)
+        case .bottomRight: return CGPoint(x: rect.maxX, y: rect.minY)
+        case .bottom: return CGPoint(x: rect.midX, y: rect.minY)
+        case .bottomLeft: return CGPoint(x: rect.minX, y: rect.minY)
+        case .left: return CGPoint(x: rect.minX, y: rect.midY)
+        }
+    }
+
+    private func handleHitRect(_ handle: Handle, in rect: CGRect) -> CGRect {
+        let center = handleCenter(handle, in: rect)
+        return CGRect(
+            x: center.x - Self.handleHitSize / 2,
+            y: center.y - Self.handleHitSize / 2,
+            width: Self.handleHitSize,
+            height: Self.handleHitSize
+        )
+    }
+
+    private func handle(at point: CGPoint) -> Handle? {
+        guard let selectedRect else {
+            return nil
+        }
+        return Handle.allCases.first { handleHitRect($0, in: selectedRect).contains(point) }
+    }
+
+    private func resizedRect(from rect: CGRect, handle: Handle, dx: CGFloat, dy: CGFloat) -> CGRect {
+        var minX = rect.minX
+        var minY = rect.minY
+        var maxX = rect.maxX
+        var maxY = rect.maxY
+
+        switch handle {
+        case .topLeft: minX += dx; maxY += dy
+        case .top: maxY += dy
+        case .topRight: maxX += dx; maxY += dy
+        case .right: maxX += dx
+        case .bottomRight: maxX += dx; minY += dy
+        case .bottom: minY += dy
+        case .bottomLeft: minX += dx; minY += dy
+        case .left: minX += dx
+        }
+
+        return CGRect(
+            x: min(minX, maxX),
+            y: min(minY, maxY),
+            width: abs(maxX - minX),
+            height: abs(maxY - minY)
+        )
+    }
+
+    // MARK: Mouse
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
 
         if let selectedRect {
-            let buttons = buttonRects(for: selectedRect)
-            if buttons.confirm.contains(point) {
-                complete(with: selectedRect)
+            if dragMode == nil {
+                let layout = controlBarLayout()
+                if layout.frame.contains(point) {
+                    let rects = layout.itemRects
+                    if rects.indices.contains(0), rects[0].insetBy(dx: -6, dy: -6).contains(point) {
+                        complete(with: selectedRect)
+                        return
+                    }
+                    if rects.indices.contains(1), rects[1].insetBy(dx: -6, dy: -6).contains(point) {
+                        completion(nil)
+                        return
+                    }
+                    return // swallow clicks on the bar background
+                }
+            }
+
+            if let handle = handle(at: point) {
+                dragMode = .resizing(handle)
+                dragStartPoint = point
+                dragStartRect = selectedRect
+                currentDragRect = nil
+                needsDisplay = true
                 return
             }
-            if buttons.cancel.contains(point) {
-                completion(nil)
-                return
-            }
+
             if selectedRect.contains(point) {
+                if event.clickCount >= 2 {
+                    complete(with: selectedRect)
+                    return
+                }
                 dragMode = .moving
                 dragStartPoint = point
                 dragStartRect = selectedRect
@@ -272,6 +466,19 @@ private final class RegionSelectionView: NSView {
                     height: dragStartRect.height
                 )
             )
+        case .resizing(let handle):
+            guard let dragStartRect else {
+                return
+            }
+            var rect = resizedRect(
+                from: dragStartRect,
+                handle: handle,
+                dx: point.x - dragStartPoint.x,
+                dy: point.y - dragStartPoint.y
+            )
+            rect.size.width = max(Self.minimumSelectionEdge, rect.width)
+            rect.size.height = max(Self.minimumSelectionEdge, rect.height)
+            selectedRect = clamped(rect)
         case .drawing, nil:
             currentDragRect = CGRect(
                 x: min(dragStartPoint.x, point.x),
@@ -284,21 +491,28 @@ private final class RegionSelectionView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if dragMode == .moving {
+        switch dragMode {
+        case .moving, .resizing:
             dragMode = nil
             dragStartPoint = nil
             dragStartRect = nil
             currentDragRect = nil
             needsDisplay = true
+            window?.invalidateCursorRects(for: self)
             return
+        case .drawing, nil:
+            break
         }
 
-        guard let rect = currentDragRect, rect.width > 20, rect.height > 20 else {
+        guard let rect = currentDragRect,
+              rect.width > Self.minimumSelectionEdge,
+              rect.height > Self.minimumSelectionEdge else {
             dragMode = nil
             dragStartPoint = nil
             dragStartRect = nil
             currentDragRect = nil
             needsDisplay = true
+            window?.invalidateCursorRects(for: self)
             return
         }
 
@@ -308,17 +522,40 @@ private final class RegionSelectionView: NSView {
         dragStartPoint = nil
         dragStartRect = nil
         needsDisplay = true
+        window?.invalidateCursorRects(for: self)
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        if let selectedRect {
-            let buttons = buttonRects(for: selectedRect)
-            addCursorRect(selectedRect, cursor: .openHand)
-            addCursorRect(buttons.confirm, cursor: .pointingHand)
-            addCursorRect(buttons.cancel, cursor: .pointingHand)
+        addCursorRect(bounds, cursor: .crosshair)
+        guard let selectedRect else {
+            return
+        }
+        addCursorRect(selectedRect, cursor: .openHand)
+        for handle in Handle.allCases {
+            addCursorRect(handleHitRect(handle, in: selectedRect), cursor: resizeCursor(for: handle))
+        }
+        let layout = controlBarLayout()
+        addCursorRect(layout.frame, cursor: .arrow)
+        for rect in layout.itemRects where !rect.isNull {
+            addCursorRect(rect, cursor: .pointingHand)
         }
     }
+
+    private func resizeCursor(for handle: Handle) -> NSCursor {
+        switch handle {
+        case .topLeft: return .frameResize(position: .topLeft, directions: .all)
+        case .top: return .frameResize(position: .top, directions: .all)
+        case .topRight: return .frameResize(position: .topRight, directions: .all)
+        case .right: return .frameResize(position: .right, directions: .all)
+        case .bottomRight: return .frameResize(position: .bottomRight, directions: .all)
+        case .bottom: return .frameResize(position: .bottom, directions: .all)
+        case .bottomLeft: return .frameResize(position: .bottomLeft, directions: .all)
+        case .left: return .frameResize(position: .left, directions: .all)
+        }
+    }
+
+    // MARK: Keyboard
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 {
@@ -336,6 +573,25 @@ private final class RegionSelectionView: NSView {
         return true
     }
 
+    /// Arrow-key nudge: moves the selection (or resizes it with Option).
+    /// Returns false when this overlay holds no selection.
+    func nudgeSelection(dx: CGFloat, dy: CGFloat, resize: Bool) -> Bool {
+        guard let rect = selectedRect else {
+            return false
+        }
+        if resize {
+            var next = rect
+            next.size.width = max(Self.minimumSelectionEdge, rect.width + dx)
+            next.size.height = max(Self.minimumSelectionEdge, rect.height + dy)
+            selectedRect = clamped(next)
+        } else {
+            selectedRect = clamped(rect.offsetBy(dx: dx, dy: dy))
+        }
+        needsDisplay = true
+        window?.invalidateCursorRects(for: self)
+        return true
+    }
+
     private func complete(with rect: CGRect) {
         let windowRect = convert(rect, to: nil)
         let globalRect = CGRect(
@@ -345,37 +601,6 @@ private final class RegionSelectionView: NSView {
             height: windowRect.height
         )
         completion(RegionSelection(rect: windowRect, globalRect: globalRect, displayID: screen.displayID))
-    }
-
-    private func buttonRects(for rect: CGRect) -> (confirm: CGRect, cancel: CGRect) {
-        let buttonSize = CGSize(width: 86, height: 30)
-        let gap: CGFloat = 8
-        let y = max(12, rect.minY - buttonSize.height - 12)
-        let confirm = CGRect(x: rect.minX, y: y, width: buttonSize.width, height: buttonSize.height)
-        let cancel = CGRect(x: confirm.maxX + gap, y: y, width: 74, height: buttonSize.height)
-        return (confirm, cancel)
-    }
-
-    private func drawButtons(for rect: CGRect) {
-        let buttons = buttonRects(for: rect)
-        drawButton(title: "Confirm", rect: buttons.confirm, fill: .controlAccentColor)
-        drawButton(title: "Cancel", rect: buttons.cancel, fill: .darkGray)
-    }
-
-    private func drawButton(title: String, rect: CGRect, fill: NSColor) {
-        let path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-        fill.withAlphaComponent(0.95).setFill()
-        path.fill()
-
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: NSColor.white
-        ]
-        let size = title.size(withAttributes: attributes)
-        title.draw(
-            at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2),
-            withAttributes: attributes
-        )
     }
 
     private func clamped(_ rect: CGRect) -> CGRect {
@@ -388,6 +613,8 @@ private final class RegionSelectionView: NSView {
             height: min(rect.height, bounds.height)
         )
     }
+
+    // MARK: Fixtures
 
     func performFixtureDragAndConfirm() {
         let insetX = min(max(bounds.width * 0.08, 180), 260)

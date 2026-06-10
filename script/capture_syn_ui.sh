@@ -8,6 +8,9 @@ OUTPUT_PATH="${1:-}"
 STATUS_PATH="${SYN_UI_STATUS_PATH:-}"
 WINDOW_TITLE="${SYN_UI_WINDOW_TITLE:-}"
 
+if [[ -z "$WINDOW_TITLE" && "${SYN_UI_SHOW_PICKER:-0}" == "1" ]]; then
+  WINDOW_TITLE="Syn Capture Picker"
+fi
 if [[ -z "$WINDOW_TITLE" && "${SYN_UI_SHOW_REGION_SELECTOR:-0}" == "1" ]]; then
   WINDOW_TITLE="Syn Region Selection"
 fi

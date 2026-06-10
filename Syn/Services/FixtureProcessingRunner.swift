@@ -53,6 +53,7 @@ enum FixtureProcessingRunner {
     static let frameDebugArgumentName = "--syn-frame-debug-fixture"
     static let ocrArgumentName = "--syn-ocr-fixture"
     static let deferredSummaryArgumentName = "--syn-deferred-summary-fixture"
+    static let streamingTranscriptArgumentName = "--syn-streaming-transcript-fixture"
 
     static var isRequested: Bool {
         ProcessInfo.processInfo.arguments.contains(argumentName)
@@ -84,6 +85,7 @@ enum FixtureProcessingRunner {
             || ProcessInfo.processInfo.arguments.contains(frameDebugArgumentName)
             || ProcessInfo.processInfo.arguments.contains(ocrArgumentName)
             || ProcessInfo.processInfo.arguments.contains(deferredSummaryArgumentName)
+            || ProcessInfo.processInfo.arguments.contains(streamingTranscriptArgumentName)
     }
 
     @MainActor
@@ -238,6 +240,14 @@ enum FixtureProcessingRunner {
                 print("SYN_HOTKEY_PICKER_STATUS=\(result.registration.pickerStatus.map(String.init) ?? "nil")")
                 print("SYN_HOTKEY_REPEAT_STATUS=\(result.registration.repeatStatus.map(String.init) ?? "nil")")
                 print("SYN_HOTKEY_CHORD_LOGIC=\(result.chordLogicPassed ? "passed" : "failed")")
+                return result.passed ? 0 : 1
+            } else if ProcessInfo.processInfo.arguments.contains(streamingTranscriptArgumentName) {
+                let result = await runStreamingTranscriptFixture(arguments: ProcessInfo.processInfo.arguments)
+                print("SYN_STREAMING_TRANSCRIPT_FIXTURE=\(result.passed ? "passed" : "failed")")
+                print("SYN_STREAMING_TRANSCRIPT_CHUNKS=\(result.chunkCount)")
+                print("SYN_STREAMING_TRANSCRIPT_TRANSCRIBED=\(result.transcribedChunkCount)")
+                print("SYN_STREAMING_TRANSCRIPT_SECONDS=\(String(format: "%.2f", result.finishSeconds))")
+                print("SYN_STREAMING_TRANSCRIPT_TEXT_PREFIX=\(result.textPrefix)")
                 return result.passed ? 0 : 1
             } else if ProcessInfo.processInfo.arguments.contains(capturePickerContractArgumentName) {
                 let result = runCapturePickerContractFixture()
@@ -1802,6 +1812,53 @@ enum FixtureProcessingRunner {
             .count
         let progress = (try? String(contentsOf: context.progressURL, encoding: .utf8)) ?? "(no progress.md written)"
         return (folderURL, summaryCount, progress)
+    }
+
+    /// Feeds an existing WAV through the StreamingTranscriber exactly as the live mic tap
+    /// would (sequential PCM buffers), then finishes — validating chunk cutting, silence
+    /// alignment, whisper invocation, and stitching without needing a live recording.
+    @MainActor
+    private static func runStreamingTranscriptFixture(
+        arguments: [String]
+    ) async -> (passed: Bool, chunkCount: Int, transcribedChunkCount: Int, finishSeconds: Double, textPrefix: String) {
+        guard let index = arguments.firstIndex(of: streamingTranscriptArgumentName),
+              index + 1 < arguments.count else {
+            return (false, 0, 0, 0, "missing wav argument")
+        }
+        let wavURL = URL(fileURLWithPath: arguments[index + 1])
+
+        let transcriber = StreamingTranscriber()
+        let workDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("syn-streaming-transcript-fixture-\(UUID().uuidString)", isDirectory: true)
+        transcriber.start(workDirectory: workDirectory)
+
+        do {
+            let file = try AVAudioFile(forReading: wavURL)
+            let format = file.processingFormat
+            let framesPerBuffer = AVAudioFrameCount(format.sampleRate / 10) // 100 ms ticks like a tap
+            while file.framePosition < file.length {
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesPerBuffer) else {
+                    break
+                }
+                try file.read(into: buffer, frameCount: framesPerBuffer)
+                guard buffer.frameLength > 0 else {
+                    break
+                }
+                transcriber.ingest(buffer: buffer)
+            }
+        } catch {
+            transcriber.cancel()
+            return (false, 0, 0, 0, "wav read failed: \(error.localizedDescription)")
+        }
+
+        let finishStart = Date()
+        guard let result = await transcriber.finish() else {
+            return (false, 0, 0, Date().timeIntervalSince(finishStart), "finish returned nil")
+        }
+        let finishSeconds = Date().timeIntervalSince(finishStart)
+        let prefix = String(result.text.prefix(160)).replacingOccurrences(of: "\n", with: " ")
+        let passed = result.isUsable && result.chunkCount >= 1 && result.transcribedChunkCount >= 1
+        return (passed, result.chunkCount, result.transcribedChunkCount, finishSeconds, prefix)
     }
 
     private static func makeOCRFixtureImage(text: String) -> CGImage? {

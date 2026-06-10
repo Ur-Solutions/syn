@@ -376,3 +376,242 @@ extension ButtonStyle where Self == SynSecondaryButtonStyle {
 extension ButtonStyle where Self == SynDestructiveButtonStyle {
     static var synDestructive: SynDestructiveButtonStyle { .init() }
 }
+
+// MARK: - AppKit overlay ink
+
+/// Static (light-theme) NSColor tokens for the full-screen selection overlays,
+/// which draw with AppKit. Overlays float over arbitrary screen content, so they
+/// always use the light "card" chrome from the mockups regardless of appearance.
+enum SynOverlayInk {
+    static let accent      = NSColor(hex: "EC6579")
+    static let accentDeep  = NSColor(hex: "D63850")
+    static let accentRing  = NSColor(hex: "F099A6")
+    static let accentTint  = NSColor(hex: "FDEBEE")
+    static let halo        = NSColor.white.withAlphaComponent(0.85)
+    static let scrim       = NSColor.black.withAlphaComponent(0.22)
+    static let card        = NSColor.white.withAlphaComponent(0.97)
+    static let hairline    = NSColor(hex: "DCDAD3")
+    static let text1       = NSColor(hex: "1C1C1E")
+    static let text2       = NSColor(hex: "6E6E73")
+    static let keycapBg    = NSColor(hex: "F5F4F1")
+    static let keycapEdge  = NSColor(hex: "DCDAD3")
+    static let keycapText  = NSColor(hex: "3A3A3C")
+    static let grid        = NSColor.white.withAlphaComponent(0.28)
+}
+
+// MARK: - AppKit overlay chrome (chips, keycaps, control bars)
+
+/// Deterministic layout + drawing for the floating chrome on the selection
+/// overlays: dimension chips, message cards, and the bottom Confirm/Cancel bar
+/// with keycaps. Layout is computed separately from drawing so views can
+/// hit-test and set cursor rects without rendering.
+enum SynOverlayChrome {
+    struct BarItem {
+        enum Style { case primary, neutral, hint }
+        var title: String
+        var keycap: String?
+        var style: Style = .neutral
+    }
+
+    struct BarLayout {
+        var frame: CGRect
+        /// One clickable rect per item, in the same order as the items array.
+        /// Hint items get `.null` since they are not clickable.
+        var itemRects: [CGRect]
+    }
+
+    private static let buttonHeight: CGFloat = 30
+    private static let barPaddingH: CGFloat = 12
+    private static let barPaddingV: CGFloat = 9
+    private static let itemGap: CGFloat = 14
+    private static let keycapGap: CGFloat = 6
+
+    private static func buttonFont(_ style: BarItem.Style) -> NSFont {
+        .systemFont(ofSize: 13, weight: style == .hint ? .regular : .semibold)
+    }
+    private static var keycapFont: NSFont { .systemFont(ofSize: 10.5, weight: .semibold) }
+
+    private static func buttonWidth(_ item: BarItem) -> CGFloat {
+        let textWidth = (item.title as NSString).size(withAttributes: [.font: buttonFont(item.style)]).width
+        return item.style == .hint ? ceil(textWidth) : ceil(textWidth) + 26
+    }
+
+    private static func keycapWidth(_ key: String) -> CGFloat {
+        max(22, ceil((key as NSString).size(withAttributes: [.font: keycapFont]).width) + 12)
+    }
+
+    private static func groupWidth(_ item: BarItem) -> CGFloat {
+        var width = buttonWidth(item)
+        if let keycap = item.keycap {
+            width += keycapGap + keycapWidth(keycap)
+        }
+        return width
+    }
+
+    static func barLayout(items: [BarItem], centerX: CGFloat, bottomY: CGFloat) -> BarLayout {
+        let contentWidth = items.map(groupWidth).reduce(0, +) + itemGap * CGFloat(max(0, items.count - 1))
+        let frame = CGRect(
+            x: (centerX - (contentWidth + barPaddingH * 2) / 2).rounded(),
+            y: bottomY.rounded(),
+            width: contentWidth + barPaddingH * 2,
+            height: buttonHeight + barPaddingV * 2
+        )
+        var itemRects: [CGRect] = []
+        var x = frame.minX + barPaddingH
+        for item in items {
+            let width = groupWidth(item)
+            let rect = CGRect(x: x, y: frame.minY + barPaddingV, width: width, height: buttonHeight)
+            itemRects.append(item.style == .hint ? .null : rect)
+            x += width + itemGap
+        }
+        return BarLayout(frame: frame, itemRects: itemRects)
+    }
+
+    static func drawBar(_ layout: BarLayout, items: [BarItem]) {
+        drawCard(in: layout.frame, radius: 12)
+
+        var x = layout.frame.minX + barPaddingH
+        for item in items {
+            let width = buttonWidth(item)
+            let buttonRect = CGRect(x: x, y: layout.frame.minY + barPaddingV, width: width, height: buttonHeight)
+            drawBarButton(item, in: buttonRect)
+            x += width
+            if let keycap = item.keycap {
+                x += keycapGap
+                let capWidth = keycapWidth(keycap)
+                let capRect = CGRect(x: x, y: buttonRect.midY - 10, width: capWidth, height: 20)
+                drawKeycap(keycap, in: capRect)
+                x += capWidth
+            }
+            x += itemGap
+        }
+    }
+
+    private static func drawBarButton(_ item: BarItem, in rect: CGRect) {
+        let textColor: NSColor
+        switch item.style {
+        case .primary:
+            let path = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+            SynOverlayInk.accentTint.setFill()
+            path.fill()
+            SynOverlayInk.accentRing.setStroke()
+            path.lineWidth = 1
+            path.stroke()
+            textColor = SynOverlayInk.accentDeep
+        case .neutral:
+            let path = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+            NSColor.white.setFill()
+            path.fill()
+            SynOverlayInk.hairline.setStroke()
+            path.lineWidth = 1
+            path.stroke()
+            textColor = SynOverlayInk.text1
+        case .hint:
+            textColor = SynOverlayInk.text2
+        }
+        draw(text: item.title, font: buttonFont(item.style), color: textColor, centeredIn: rect)
+    }
+
+    static func drawKeycap(_ key: String, in rect: CGRect) {
+        let path = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5)
+        SynOverlayInk.keycapBg.setFill()
+        path.fill()
+        SynOverlayInk.keycapEdge.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        draw(text: key, font: keycapFont, color: SynOverlayInk.keycapText, centeredIn: rect)
+    }
+
+    /// A small mono readout chip (e.g. "960 × 540"). Returns the drawn frame.
+    @discardableResult
+    static func drawChip(text: String, centerX: CGFloat, minY: CGFloat) -> CGRect {
+        let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .semibold)
+        let size = (text as NSString).size(withAttributes: [.font: font])
+        let rect = CGRect(
+            x: (centerX - (size.width + 20) / 2).rounded(),
+            y: minY.rounded(),
+            width: size.width + 20,
+            height: 22
+        )
+        drawCard(in: rect, radius: 6)
+        draw(text: text, font: font, color: SynOverlayInk.text1, centeredIn: rect)
+        return rect
+    }
+
+    static func chipSize(text: String) -> CGSize {
+        let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .semibold)
+        let size = (text as NSString).size(withAttributes: [.font: font])
+        return CGSize(width: size.width + 20, height: 22)
+    }
+
+    /// A single-line label card (window selector hover label). Returns the frame.
+    @discardableResult
+    static func drawLabelCard(text: String, centerX: CGFloat, minY: CGFloat, maxWidth: CGFloat) -> CGRect {
+        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let textWidth = min(ceil((text as NSString).size(withAttributes: [.font: font]).width), maxWidth - 24)
+        let rect = CGRect(
+            x: (centerX - (textWidth + 24) / 2).rounded(),
+            y: minY.rounded(),
+            width: textWidth + 24,
+            height: 24
+        )
+        drawCard(in: rect, radius: 7)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.alignment = .center
+        let textRect = CGRect(x: rect.minX + 12, y: rect.minY + (rect.height - ceil(font.capHeight + abs(font.descender) + 4)) / 2, width: textWidth, height: ceil(font.capHeight + abs(font.descender) + 4))
+        (text as NSString).draw(
+            in: textRect,
+            withAttributes: [.font: font, .foregroundColor: SynOverlayInk.text1, .paragraphStyle: paragraph]
+        )
+        return rect
+    }
+
+    /// Centered message card with a headline and a smaller hint line.
+    static func drawMessageCard(title: String, subtitle: String, center: CGPoint) {
+        let titleFont = NSFont.systemFont(ofSize: 15, weight: .semibold)
+        let subtitleFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+        let titleSize = (title as NSString).size(withAttributes: [.font: titleFont])
+        let subtitleSize = (subtitle as NSString).size(withAttributes: [.font: subtitleFont])
+        let width = max(titleSize.width, subtitleSize.width) + 44
+        let rect = CGRect(
+            x: (center.x - width / 2).rounded(),
+            y: (center.y - 31).rounded(),
+            width: width,
+            height: 62
+        )
+        drawCard(in: rect, radius: 12)
+        (title as NSString).draw(
+            at: CGPoint(x: rect.midX - titleSize.width / 2, y: rect.midY + 2),
+            withAttributes: [.font: titleFont, .foregroundColor: SynOverlayInk.text1]
+        )
+        (subtitle as NSString).draw(
+            at: CGPoint(x: rect.midX - subtitleSize.width / 2, y: rect.midY - subtitleSize.height - 1),
+            withAttributes: [.font: subtitleFont, .foregroundColor: SynOverlayInk.text2]
+        )
+    }
+
+    private static func drawCard(in rect: CGRect, radius: CGFloat) {
+        NSGraphicsContext.current?.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+        shadow.shadowBlurRadius = 14
+        shadow.shadowOffset = CGSize(width: 0, height: -4)
+        shadow.set()
+        let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+        SynOverlayInk.card.setFill()
+        path.fill()
+        NSGraphicsContext.current?.restoreGraphicsState()
+        SynOverlayInk.hairline.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+
+    private static func draw(text: String, font: NSFont, color: NSColor, centeredIn rect: CGRect) {
+        let size = (text as NSString).size(withAttributes: [.font: font])
+        (text as NSString).draw(
+            at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2),
+            withAttributes: [.font: font, .foregroundColor: color]
+        )
+    }
+}

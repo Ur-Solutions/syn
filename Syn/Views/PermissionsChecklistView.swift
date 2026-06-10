@@ -10,88 +10,87 @@ struct PermissionChecklistView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Permissions")
-                    .font(.headline)
-
-                Spacer()
-
-                Button("Refresh") {
-                    snapshot = .current()
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Running app")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-
-                    Button("Copy Path") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(snapshot.bundlePath, forType: .string)
-                    }
-                    .font(.caption)
-                }
-
-                Text(snapshot.bundlePath)
-                    .font(.caption)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-
-                Text("Bundle ID: \(snapshot.bundleIdentifier)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-            .padding(.vertical, 4)
-
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+            VStack(alignment: .leading, spacing: 10) {
                 ForEach(snapshot.items) { item in
-                    GridRow {
-                        Label(item.kind.title, systemImage: item.kind.systemImage)
-                        Text(item.statusTitle)
-                            .foregroundStyle(item.foregroundStyle)
+                    HStack(spacing: 10) {
+                        Image(systemName: item.kind.systemImage)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(SynColor.text2)
+                            .frame(width: 20)
+
+                        Text(item.kind.title)
+                            .synFont(.body)
+                            .foregroundStyle(SynColor.text1)
+
+                        Spacer()
+
+                        SynStatusBadge(state: item.badgeState, label: item.statusTitle)
 
                         Button(item.actionTitle) {
                             handle(item)
                         }
+                        .buttonStyle(.synSecondary(.small))
                         .disabled(item.status == .granted)
+                        .opacity(item.status == .granted ? 0.45 : 1)
                     }
                 }
             }
-            .font(.callout)
+
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(snapshot.bundlePath)
+                        .font(SynFont.mono(10.5))
+                        .foregroundStyle(SynColor.text3)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Text(snapshot.bundleIdentifier)
+                        .font(SynFont.mono(10.5))
+                        .foregroundStyle(SynColor.text3)
+                        .textSelection(.enabled)
+                }
+
+                Spacer()
+
+                Button("Copy Path") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(snapshot.bundlePath, forType: .string)
+                }
+                .buttonStyle(.synSecondary(.small))
+
+                Button("Refresh") {
+                    snapshot = .current()
+                }
+                .buttonStyle(.synSecondary(.small))
+            }
 
             if snapshot.requiresScreenRecordingRestart {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Screen Recording changes require a full Syn relaunch; Refresh cannot detect a new grant in this process.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .synFont(.footnote)
+                        .foregroundStyle(SynColor.text2)
 
                     Spacer()
 
                     Button("Relaunch Syn") {
                         relaunchSyn()
                     }
-                    .font(.caption)
+                    .buttonStyle(.synSecondary(.small))
                 }
             }
 
             if snapshot.requiresMicrophoneReset {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Microphone is denied or stuck. Reset only Syn's microphone grant; Syn will relaunch and request it again.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .synFont(.footnote)
+                        .foregroundStyle(SynColor.text2)
 
                     Spacer()
 
                     Button("Reset Mic") {
                         resetMicrophonePermissionAndRelaunch()
                     }
-                    .font(.caption)
+                    .buttonStyle(.synSecondary(.small))
                 }
             }
         }
@@ -249,6 +248,18 @@ private struct PermissionItem: Identifiable {
         }
 
         return status.title
+    }
+
+    var badgeState: SynState {
+        if kind == .accessibility, status != .granted {
+            return .idle
+        }
+
+        switch status {
+        case .granted: return .success
+        case .notDetermined: return .idle
+        case .notGranted: return .warning
+        }
     }
 
     var foregroundStyle: Color {

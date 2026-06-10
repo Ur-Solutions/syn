@@ -33,6 +33,11 @@ final class GlobalHotkeyService {
     var onExitCanvasMode: (() -> Void)?
     var onSelectCanvasTool: ((AnnotationTool) -> Void)?
     var onClearCanvas: (() -> Void)?
+    var onDeleteSelectedAnnotation: (() -> Void)?
+    var onUndoAnnotation: (() -> Void)?
+    var onCycleAnnotationSelection: (() -> Void)?
+    var onNudgeSelectedAnnotation: ((CGFloat, CGFloat) -> Void)?
+    var onToggleElementPicker: (() -> Void)?
 
     private let leftShiftKeyCode = CGKeyCode(56)
     private let rightShiftKeyCode = CGKeyCode(60)
@@ -46,6 +51,14 @@ final class GlobalHotkeyService {
     private let fourKeyCode = CGKeyCode(21)
     private let fiveKeyCode = CGKeyCode(23)
     private let sixKeyCode = CGKeyCode(22)
+    private let xKeyCode = CGKeyCode(7)
+    private let zKeyCode = CGKeyCode(6)
+    private let eKeyCode = CGKeyCode(14)
+    private let tabKeyCode = CGKeyCode(48)
+    private let leftArrowKeyCode = CGKeyCode(123)
+    private let rightArrowKeyCode = CGKeyCode(124)
+    private let downArrowKeyCode = CGKeyCode(125)
+    private let upArrowKeyCode = CGKeyCode(126)
     private let leftShiftEventFlagMask = UInt64(NX_DEVICELSHIFTKEYMASK)
     private let rightShiftEventFlagMask = UInt64(NX_DEVICERSHIFTKEYMASK)
     private let chordRPollInterval: TimeInterval = 0.001
@@ -72,6 +85,10 @@ final class GlobalHotkeyService {
     private var isRDown = false
     private var isCDown = false
     private var isDDown = false
+    private var isXDown = false
+    private var isZDown = false
+    private var isTabDown = false
+    private var isEDown = false
     private var shiftChordArmed = false
     private var shiftChordBeganAtNanoseconds: UInt64?
     private var chordTriggered = false
@@ -508,6 +525,10 @@ final class GlobalHotkeyService {
         if keyCode == cKeyCode, type == .keyUp {
             isCDown = false
         }
+        if keyCode == xKeyCode, type == .keyUp { isXDown = false }
+        if keyCode == zKeyCode, type == .keyUp { isZDown = false }
+        if keyCode == tabKeyCode, type == .keyUp { isTabDown = false }
+        if keyCode == eKeyCode, type == .keyUp { isEDown = false }
 
         let shouldSamplePhysicalR = pendingRepeatWorkItem != nil
             || shiftChordArmed
@@ -629,8 +650,19 @@ final class GlobalHotkeyService {
             return false
         }
 
-        guard keyCode == cKeyCode || isCanvasModeActive else {
+        guard keyCode == cKeyCode || keyCode == eKeyCode || isCanvasModeActive else {
             return false
+        }
+
+        if keyCode == eKeyCode {
+            guard !isEDown else { return true }
+            isEDown = true
+            cancelPendingRepeat()
+            resetChordResolutionState()
+            NSLog("Syn global shortcut pressed: Right Shift + E element picker")
+            recordDebugEvent("action element-picker-toggle")
+            onToggleElementPicker?()
+            return true
         }
 
         switch keyCode {
@@ -662,6 +694,36 @@ final class GlobalHotkeyService {
             return true
         case sixKeyCode:
             triggerCanvasToolShortcut(.pen)
+            return true
+        case xKeyCode:
+            guard !isXDown else { return true }
+            isXDown = true
+            recordDebugEvent("action canvas-delete-selected")
+            onDeleteSelectedAnnotation?()
+            return true
+        case zKeyCode:
+            guard !isZDown else { return true }
+            isZDown = true
+            recordDebugEvent("action canvas-undo")
+            onUndoAnnotation?()
+            return true
+        case tabKeyCode:
+            guard !isTabDown else { return true }
+            isTabDown = true
+            recordDebugEvent("action canvas-cycle-selection")
+            onCycleAnnotationSelection?()
+            return true
+        case leftArrowKeyCode:
+            onNudgeSelectedAnnotation?(-8, 0)
+            return true
+        case rightArrowKeyCode:
+            onNudgeSelectedAnnotation?(8, 0)
+            return true
+        case upArrowKeyCode:
+            onNudgeSelectedAnnotation?(0, 8)
+            return true
+        case downArrowKeyCode:
+            onNudgeSelectedAnnotation?(0, -8)
             return true
         case dKeyCode:
             guard !isDDown else {

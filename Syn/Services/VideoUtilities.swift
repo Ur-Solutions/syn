@@ -124,6 +124,145 @@ enum VideoUtilities {
         try FileManager.default.copyItem(at: rawURL, to: finalURL)
     }
 
+    /// Maps one global screen point into final-video pixels using the exact same formula as
+    /// the offline `mapPointerEvents`, so live-burned bubbles land where the offline render
+    /// would have put them. Returns nil when the point falls outside the video canvas.
+    static func mapGlobalPointToVideo(
+        _ point: CGPoint,
+        capture: CaptureSourceMetadata,
+        presentationSize: CGSize,
+        padding: CGFloat
+    ) -> CGPoint? {
+        guard let sourceRect = pointerSourceRect(for: capture, presentationSize: presentationSize) else {
+            return nil
+        }
+        let scaleX = presentationSize.width / max(sourceRect.width, 1)
+        let scaleY = presentationSize.height / max(sourceRect.height, 1)
+        let x = (point.x - sourceRect.minX) * scaleX + padding
+        let y = (sourceRect.maxY - point.y) * scaleY + padding
+        let renderSize = CGSize(width: presentationSize.width + padding * 2, height: presentationSize.height + padding * 2)
+        guard x >= 0, y >= 0, x <= renderSize.width, y <= renderSize.height else {
+            return nil
+        }
+        return CGPoint(x: x, y: y)
+    }
+
+    /// Stop-time finalize for recordings whose click bubbles were already burned live during
+    /// capture: stitches the live-rendered video segments with the raw recording's audio
+    /// track through a PASSTHROUGH export (no re-encode), then maps pointer/annotation
+    /// metadata exactly like the offline render would. Throws if anything is off — the
+    /// caller falls back to the full offline render.
+    static func fastFinalizeLiveRender(
+        liveSegmentURLs: [URL],
+        rawURL: URL,
+        finalURL: URL,
+        capture: CaptureSourceMetadata,
+        pointerEvents: [PointerEvent],
+        renderedClickCount: Int
+    ) async throws -> ProcessedVideoResult {
+        try? FileManager.default.removeItem(at: finalURL)
+        guard !liveSegmentURLs.isEmpty else {
+            throw VideoUtilitiesError.noVideoTrack
+        }
+
+        let composition = AVMutableComposition()
+        guard let videoTrack = composition.addMutableTrack(
+            withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else {
+            throw VideoUtilitiesError.noExportSession
+        }
+
+        var cursor = CMTime.zero
+        var presentationSize = CGSize.zero
+        for segmentURL in liveSegmentURLs {
+            let asset = AVURLAsset(url: segmentURL)
+            guard let sourceTrack = try await asset.loadTracks(withMediaType: .video).first else {
+                throw VideoUtilitiesError.noVideoTrack
+            }
+            let duration = try await asset.load(.duration)
+            try videoTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: sourceTrack, at: cursor)
+            if presentationSize == .zero {
+                presentationSize = try await sourceTrack.load(.naturalSize)
+            }
+            cursor = cursor + duration
+        }
+
+        let rawAsset = AVURLAsset(url: rawURL)
+        let rawDuration = try await rawAsset.load(.duration)
+        // If the live encode missed a meaningful chunk of the recording (frame delivery
+        // stalls, dropped segments), reject it — the offline render is the safe fallback.
+        guard abs(rawDuration.seconds - cursor.seconds) <= max(1.5, rawDuration.seconds * 0.05) else {
+            throw VideoUtilitiesError.exportFailed(String(
+                format: "Live render duration %.2fs diverges from raw %.2fs.",
+                cursor.seconds,
+                rawDuration.seconds
+            ))
+        }
+        if let audioTrack = try await rawAsset.loadTracks(withMediaType: .audio).first,
+           let compositionAudioTrack = composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+           ) {
+            try compositionAudioTrack.insertTimeRange(
+                CMTimeRange(start: .zero, duration: min(rawDuration, cursor)),
+                of: audioTrack,
+                at: .zero
+            )
+        }
+
+        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
+            throw VideoUtilitiesError.noExportSession
+        }
+        exportSession.outputURL = finalURL
+        exportSession.outputFileType = .mp4
+        exportSession.shouldOptimizeForNetworkUse = true
+        try await exportSession.exportAsync()
+
+        let mapped = mapPointerEvents(
+            pointerEvents,
+            capture: capture,
+            presentationSize: presentationSize,
+            renderSize: presentationSize,
+            padding: 0,
+            activeWindowPlan: nil
+        )
+
+        var notes = mapped.notes
+        notes.append("recording.mp4 was rendered live during capture; stop-time finalize was a passthrough remux without re-encoding.")
+        if capture.mode == CaptureMode.selectedWindow.rawValue {
+            notes.append("Live-rendered window capture does not add the 24 px padding used by the offline render.")
+        }
+
+        return ProcessedVideoResult(
+            duration: cursor.seconds,
+            renderSize: CodableSize(presentationSize),
+            pointerEvents: mapped.events,
+            renderedClickCount: renderedClickCount,
+            annotations: [],
+            renderedAnnotationCount: 0,
+            notes: notes
+        )
+    }
+
+    /// True when the processed render is a moving crop of the raw capture (Active Window
+    /// follow / Smart Region), i.e. the final video's framing differs structurally from the
+    /// raw recording. Conservative over-approximation of the internal render-plan guards:
+    /// callers use it to decide whether raw-recording frames are representative of the final
+    /// video (when false, frame extraction can run in parallel with the render).
+    static func usesDynamicCropRender(
+        capture: CaptureSourceMetadata,
+        activeWindowSamples: [ActiveWindowSample]
+    ) -> Bool {
+        if capture.mode == CaptureMode.activeWindowFollow.rawValue, !activeWindowSamples.isEmpty {
+            return true
+        }
+        if capture.mode == CaptureMode.smartRegion.rawValue, capture.smartRegion != nil {
+            return true
+        }
+        return false
+    }
+
     static func composeAllScreensRecordings(
         _ recordings: [AllScreensDisplayRecording],
         outputURL: URL

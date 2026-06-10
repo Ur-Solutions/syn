@@ -161,8 +161,6 @@ private struct DetailView: View {
         Group {
             if appState.isChromeTabPickerPresented {
                 pickerWrapper { ChromeTabPickerView().environmentObject(appState).frame(maxWidth: 620) }
-            } else if appState.isCapturePickerPresented {
-                pickerWrapper { CapturePickerView().environmentObject(appState).frame(maxWidth: 760) }
             } else {
                 main
             }
@@ -489,6 +487,11 @@ private struct VideoPreviewCard: View {
             .frame(height: 220)
             .frame(maxWidth: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: SynRadius.lg, style: .continuous))
+            // The .fill thumbnail overflows its frame; clipShape only clips
+            // drawing, not hit-testing. Without this contentShape the card's
+            // invisible overflow swallows clicks meant for the action bar and
+            // cards around it.
+            .contentShape(RoundedRectangle(cornerRadius: SynRadius.lg, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: SynRadius.lg, style: .continuous)
                     .strokeBorder(SynColor.hairline, lineWidth: 1)
@@ -578,40 +581,53 @@ private struct StatusBannerView: View {
         if appState.activeRecording != nil || appState.statusMessage != nil || appState.lastErrorMessage != nil {
             VStack(alignment: .leading, spacing: 10) {
                 if let recording = appState.activeRecording {
-                    HStack {
-                        Label(statusTitle(for: recording), systemImage: statusIcon(for: recording))
-                            .foregroundStyle(statusColor(for: recording))
+                    HStack(spacing: 10) {
+                        SynStatusDot(
+                            state: bannerState(for: recording),
+                            pulse: recording.phase == .recording || recording.phase == .processing,
+                            size: 9
+                        )
+
+                        Text(statusTitle(for: recording))
+                            .synFont(.headline)
+                            .foregroundStyle(SynColor.text1)
 
                         Text(recording.mode.title)
-                            .foregroundStyle(.secondary)
+                            .synFont(.subhead)
+                            .foregroundStyle(SynColor.text2)
 
                         Spacer()
 
                         Button(recording.isPaused ? "Resume" : "Pause") {
                             appState.pauseOrResumeRecording()
                         }
+                        .buttonStyle(.synSecondary(.small))
                         .disabled(recording.phase == .processing)
 
-                        Button("Stop", role: .destructive) {
+                        Button("Stop") {
                             appState.stopRecording()
                         }
+                        .buttonStyle(.synDestructive)
                         .disabled(recording.phase == .processing)
                     }
                 }
 
                 if let statusMessage = appState.statusMessage {
                     Text(statusMessage)
-                        .foregroundStyle(.secondary)
+                        .synFont(.subhead)
+                        .foregroundStyle(SynColor.text2)
                 }
 
                 if let warningMessage = appState.recordingDurationWarningMessage {
                     Label(warningMessage, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.yellow)
+                        .synFont(.subhead)
+                        .foregroundStyle(SynColor.warning)
                 }
 
                 if let lastErrorMessage = appState.lastErrorMessage {
-                    Text(lastErrorMessage)
-                        .foregroundStyle(.red)
+                    Label(lastErrorMessage, systemImage: "xmark.octagon.fill")
+                        .synFont(.subhead)
+                        .foregroundStyle(SynColor.destructive)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -619,27 +635,19 @@ private struct StatusBannerView: View {
         }
     }
 
+    private func bannerState(for recording: ActiveRecording) -> SynState {
+        switch recording.phase {
+        case .processing: .processing
+        case .paused: .paused
+        default: .recording
+        }
+    }
+
     private func statusTitle(for recording: ActiveRecording) -> String {
         switch recording.phase {
         case .processing: "Processing"
         case .paused: "Paused"
-        default: recording.phase.rawValue.capitalized
-        }
-    }
-
-    private func statusIcon(for recording: ActiveRecording) -> String {
-        switch recording.phase {
-        case .processing: "gearshape.circle.fill"
-        case .paused: "pause.circle.fill"
-        default: "record.circle"
-        }
-    }
-
-    private func statusColor(for recording: ActiveRecording) -> Color {
-        switch recording.phase {
-        case .processing: .blue
-        case .paused: .yellow
-        default: .red
+        default: "Recording"
         }
     }
 }

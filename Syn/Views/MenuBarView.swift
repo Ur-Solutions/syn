@@ -5,29 +5,47 @@ struct MenuBarView: View {
     @EnvironmentObject private var appState: AppState
 
     var body: some View {
-        Button("Open Syn") {
+        Button {
             appState.showMainWindow()
+        } label: {
+            Label("Open Syn", systemImage: "macwindow")
         }
 
         Divider()
 
-        Button("Start with Picker") {
+        Button {
             appState.openCapturePicker()
+        } label: {
+            Label("Start Recording…", systemImage: "record.circle")
         }
 
-        Button("Repeat Last Capture") {
+        Button {
             appState.repeatLastCapture()
+        } label: {
+            Label(
+                appState.lastCaptureMode.map { "Repeat \($0.title)" } ?? "Repeat Last Capture",
+                systemImage: "repeat"
+            )
         }
 
-        if appState.activeRecording != nil {
+        if let recording = appState.activeRecording {
             Divider()
 
-            Button(appState.activeRecording?.isPaused == true ? "Resume" : "Pause") {
+            Text("\(recording.isPaused ? "Paused" : "Recording") — \(recording.mode.title)")
+
+            Button {
                 appState.pauseOrResumeRecording()
+            } label: {
+                Label(
+                    recording.isPaused ? "Resume" : "Pause",
+                    systemImage: recording.isPaused ? "play.fill" : "pause.fill"
+                )
             }
 
-            Button("Stop Recording") {
+            Button {
                 appState.stopRecording()
+            } label: {
+                Label("Stop Recording", systemImage: "stop.fill")
             }
         }
 

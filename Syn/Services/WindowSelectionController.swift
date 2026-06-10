@@ -18,8 +18,13 @@ final class WindowSelectionController {
         cancel()
         self.completion = completion
         candidates = eligibleWindowCandidates()
-        let initialSelectedID = preselectFirstCandidate ? candidates.first?.id : nil
-        fixtureSelectedWindowID = initialSelectedID
+
+        // Highlight the window already under the cursor so Enter (or one click)
+        // starts immediately; fixtures can force the first candidate instead.
+        let initialSelectedID = preselectFirstCandidate
+            ? candidates.first?.id
+            : candidateUnderMouse()?.id
+        fixtureSelectedWindowID = preselectFirstCandidate ? initialSelectedID : nil
         currentSelectedID = initialSelectedID
 
         for screen in NSScreen.screens {
@@ -33,7 +38,7 @@ final class WindowSelectionController {
                 onCancel: { [weak self] in
                     self?.finish(nil)
                 },
-                onSelect: { [weak self] windowID in
+                onHighlight: { [weak self] windowID in
                     self?.currentSelectedID = windowID
                 }
             )
@@ -74,9 +79,10 @@ final class WindowSelectionController {
 
     private func installKeyMonitor() {
         removeKeyMonitor()
-        // A local key monitor handles Enter/Escape regardless of which display's
-        // overlay window is key (only one borderless window can be key at a time),
-        // using the controller-level selection so confirm works on any screen.
+        // A local key monitor handles keys regardless of which display's overlay
+        // window is key (only one borderless window can be key at a time).
+        // Escape cancels, Enter starts the highlighted window, Tab/arrows cycle
+        // the highlight through the candidate list.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else {
                 return event
@@ -91,6 +97,15 @@ final class WindowSelectionController {
                     return nil
                 }
                 return event
+            case 48: // Tab
+                self.cycleHighlight(forward: !event.modifierFlags.contains(.shift))
+                return nil
+            case 124, 125: // Right / Down arrows
+                self.cycleHighlight(forward: true)
+                return nil
+            case 123, 126: // Left / Up arrows
+                self.cycleHighlight(forward: false)
+                return nil
             default:
                 return event
             }
@@ -102,6 +117,35 @@ final class WindowSelectionController {
             NSEvent.removeMonitor(keyMonitor)
         }
         keyMonitor = nil
+    }
+
+    private func cycleHighlight(forward: Bool) {
+        guard !candidates.isEmpty else {
+            return
+        }
+        let nextIndex: Int
+        if let currentSelectedID,
+           let index = candidates.firstIndex(where: { $0.id == currentSelectedID }) {
+            nextIndex = (index + (forward ? 1 : -1) + candidates.count) % candidates.count
+        } else {
+            nextIndex = forward ? 0 : candidates.count - 1
+        }
+        setHighlight(candidates[nextIndex].id)
+    }
+
+    private func setHighlight(_ windowID: CGWindowID?) {
+        currentSelectedID = windowID
+        for window in windows {
+            (window.contentView as? WindowSelectionOverlayView)?.updateHighlight(windowID)
+        }
+    }
+
+    private func candidateUnderMouse() -> WindowSelectionCandidate? {
+        let mouse = NSEvent.mouseLocation
+        let primaryHeight = (NSScreen.screens.first(where: { $0.frame.origin == .zero })
+            ?? NSScreen.screens.first)?.frame.height ?? 0
+        let quartzPoint = CGPoint(x: mouse.x, y: primaryHeight - mouse.y)
+        return candidates.first { $0.rect.contains(quartzPoint) }
     }
 
     func confirmFixtureSelection() {
@@ -190,9 +234,15 @@ private final class WindowSelectionOverlayView: NSView {
     private let candidates: [WindowSelectionCandidate]
     private let onConfirm: (CGWindowID) -> Void
     private let onCancel: () -> Void
-    private let onSelect: (CGWindowID) -> Void
-    private var hoveredID: CGWindowID?
-    private var selectedID: CGWindowID?
+    private let onHighlight: (CGWindowID?) -> Void
+    private var highlightedID: CGWindowID?
+
+    private var barItems: [SynOverlayChrome.BarItem] {
+        [
+            .init(title: "Click a window to start · ⇥ cycles · ⏎ starts", keycap: nil, style: .hint),
+            .init(title: "Cancel", keycap: "esc", style: .neutral)
+        ]
+    }
 
     init(
         screen: NSScreen,
@@ -200,14 +250,14 @@ private final class WindowSelectionOverlayView: NSView {
         initialSelectedID: CGWindowID?,
         onConfirm: @escaping (CGWindowID) -> Void,
         onCancel: @escaping () -> Void,
-        onSelect: @escaping (CGWindowID) -> Void
+        onHighlight: @escaping (CGWindowID?) -> Void
     ) {
         self.screen = screen
         self.candidates = candidates
-        self.selectedID = initialSelectedID
+        self.highlightedID = initialSelectedID
         self.onConfirm = onConfirm
         self.onCancel = onCancel
-        self.onSelect = onSelect
+        self.onHighlight = onHighlight
         super.init(frame: screen.frame)
         wantsLayer = true
     }
@@ -218,8 +268,13 @@ private final class WindowSelectionOverlayView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
+    func updateHighlight(_ windowID: CGWindowID?) {
+        highlightedID = windowID
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.black.withAlphaComponent(0.25).setFill()
+        SynOverlayInk.scrim.setFill()
         bounds.fill()
 
         for candidate in candidates {
@@ -227,66 +282,76 @@ private final class WindowSelectionOverlayView: NSView {
                 continue
             }
 
-            let isHovered = candidate.id == hoveredID
-            let isSelected = candidate.id == selectedID
-            let fillAlpha: CGFloat = isSelected ? 0.24 : (isHovered ? 0.18 : 0.06)
-            NSColor.controlAccentColor.withAlphaComponent(fillAlpha).setFill()
-            localRect.fill()
+            let isHighlighted = candidate.id == highlightedID
 
-            let path = NSBezierPath(rect: localRect)
-            path.lineWidth = isSelected || isHovered ? 3 : 1.5
-            NSColor.controlAccentColor.withAlphaComponent(isSelected || isHovered ? 1 : 0.72).setStroke()
-            path.stroke()
+            if isHighlighted {
+                // Punch the highlighted window out of the scrim so it reads at
+                // full brightness — "this is what you'll record".
+                NSColor.clear.setFill()
+                localRect.fill(using: .clear)
+                SynOverlayInk.accentTint.withAlphaComponent(0.14).setFill()
+                localRect.fill()
 
-            if isHovered || isSelected {
+                let haloPath = NSBezierPath(rect: localRect.insetBy(dx: -1.5, dy: -1.5))
+                haloPath.lineWidth = 3
+                SynOverlayInk.halo.setStroke()
+                haloPath.stroke()
+
+                let path = NSBezierPath(rect: localRect)
+                path.lineWidth = 2.5
+                SynOverlayInk.accent.setStroke()
+                path.stroke()
+
                 drawLabel(for: candidate, in: localRect)
-            }
-
-            if isSelected {
-                drawButtons(for: localRect)
+            } else {
+                let path = NSBezierPath(rect: localRect)
+                path.lineWidth = 1
+                NSColor.white.withAlphaComponent(0.4).setStroke()
+                path.stroke()
             }
         }
 
-        let label = selectedID == nil
-            ? "Click a window to select it. Esc cancels."
-            : "Confirm selected window. Enter starts. Esc cancels."
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 18, weight: .semibold),
-            .foregroundColor: NSColor.white
-        ]
-        let size = label.size(withAttributes: attributes)
-        label.draw(
-            at: CGPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2),
-            withAttributes: attributes
-        )
+        if candidates.isEmpty {
+            SynOverlayChrome.drawMessageCard(
+                title: "No windows to capture",
+                subtitle: "Open the window you want to record, then try again · Esc cancels",
+                center: CGPoint(x: bounds.midX, y: bounds.midY)
+            )
+        } else {
+            SynOverlayChrome.drawBar(controlBarLayout(), items: barItems)
+        }
+    }
+
+    private func controlBarLayout() -> SynOverlayChrome.BarLayout {
+        SynOverlayChrome.barLayout(items: barItems, centerX: bounds.midX, bottomY: bounds.minY + 56)
     }
 
     override func mouseMoved(with event: NSEvent) {
         let localPoint = convert(event.locationInWindow, from: nil)
-        hoveredID = candidate(atLocalPoint: localPoint)?.id
-        needsDisplay = true
+        let hovered = candidate(atLocalPoint: localPoint)?.id
+        if hovered != highlightedID {
+            highlightedID = hovered
+            onHighlight(hovered)
+            needsDisplay = true
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
         let localPoint = convert(event.locationInWindow, from: nil)
 
-        if let selected = selectedCandidate(),
-           let localRect = localRect(for: selected.rect) {
-            let buttons = buttonRects(for: localRect)
-            if buttons.confirm.contains(localPoint) {
-                onConfirm(selected.id)
-                return
-            }
-            if buttons.cancel.contains(localPoint) {
+        let layout = controlBarLayout()
+        if layout.frame.contains(localPoint) {
+            if let cancelRect = layout.itemRects.last,
+               !cancelRect.isNull,
+               cancelRect.insetBy(dx: -6, dy: -6).contains(localPoint) {
                 onCancel()
-                return
             }
+            return
         }
 
+        // One click starts the recording — no separate confirm step.
         if let candidate = candidate(atLocalPoint: localPoint) {
-            selectedID = candidate.id
-            onSelect(candidate.id)
-            needsDisplay = true
+            onConfirm(candidate.id)
         }
     }
 
@@ -294,8 +359,17 @@ private final class WindowSelectionOverlayView: NSView {
         if event.keyCode == 53 {
             onCancel()
         } else if event.keyCode == 36,
-                  let selectedID {
-            onConfirm(selectedID)
+                  let highlightedID {
+            onConfirm(highlightedID)
+        }
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        let layout = controlBarLayout()
+        addCursorRect(layout.frame, cursor: .arrow)
+        for rect in layout.itemRects where !rect.isNull {
+            addCursorRect(rect, cursor: .pointingHand)
         }
     }
 
@@ -306,13 +380,6 @@ private final class WindowSelectionOverlayView: NSView {
             }
             return rect.contains(localPoint)
         }
-    }
-
-    private func selectedCandidate() -> WindowSelectionCandidate? {
-        guard let selectedID else {
-            return nil
-        }
-        return candidates.first { $0.id == selectedID }
     }
 
     private func localRect(for globalRect: CGRect) -> CGRect? {
@@ -332,60 +399,26 @@ private final class WindowSelectionOverlayView: NSView {
         )
     }
 
-    private func buttonRects(for rect: CGRect) -> (confirm: CGRect, cancel: CGRect) {
-        let buttonSize = CGSize(width: 86, height: 30)
-        let gap: CGFloat = 8
-        let y = max(12, rect.minY - buttonSize.height - 12)
-        let confirm = CGRect(x: rect.minX, y: y, width: buttonSize.width, height: buttonSize.height)
-        let cancel = CGRect(x: confirm.maxX + gap, y: y, width: 74, height: buttonSize.height)
-        return (confirm, cancel)
-    }
-
-    private func drawButtons(for rect: CGRect) {
-        let buttons = buttonRects(for: rect)
-        drawButton(title: "Confirm", rect: buttons.confirm, fill: .controlAccentColor)
-        drawButton(title: "Cancel", rect: buttons.cancel, fill: .darkGray)
-    }
-
-    private func drawButton(title: String, rect: CGRect, fill: NSColor) {
-        let path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-        fill.withAlphaComponent(0.95).setFill()
-        path.fill()
-
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: NSColor.white
-        ]
-        let size = title.size(withAttributes: attributes)
-        title.draw(
-            at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2),
-            withAttributes: attributes
-        )
-    }
-
     private func drawLabel(for candidate: WindowSelectionCandidate, in rect: CGRect) {
         let title = [candidate.appName, candidate.title]
             .compactMap { value -> String? in
                 guard let value, !value.isEmpty else { return nil }
                 return value
             }
-            .joined(separator: " - ")
+            .joined(separator: " — ")
         guard !title.isEmpty else {
             return
         }
 
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-            .foregroundColor: NSColor.white
-        ]
-        let truncated = title.count > 72 ? "\(title.prefix(69))..." : title
-        let size = truncated.size(withAttributes: attributes)
-        let labelRect = CGRect(x: rect.minX, y: rect.maxY + 6, width: size.width + 14, height: size.height + 8)
-        NSColor.black.withAlphaComponent(0.72).setFill()
-        NSBezierPath(roundedRect: labelRect, xRadius: 5, yRadius: 5).fill()
-        truncated.draw(
-            at: CGPoint(x: labelRect.minX + 7, y: labelRect.midY - size.height / 2),
-            withAttributes: attributes
+        var labelY = rect.maxY + 10
+        if labelY + 24 > bounds.maxY - 4 {
+            labelY = rect.maxY - 24 - 10
+        }
+        SynOverlayChrome.drawLabelCard(
+            text: title,
+            centerX: rect.midX,
+            minY: labelY,
+            maxWidth: min(rect.width + 80, bounds.width - 24)
         )
     }
 

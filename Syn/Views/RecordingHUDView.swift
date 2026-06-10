@@ -75,6 +75,13 @@ struct RecordingHUDView: View {
                 ) { appState.toggleCanvasMode() }
 
                 hudButton(
+                    system: "scope",
+                    help: "Element picker (Right Shift + E)",
+                    kind: appState.isElementPickerEnabled ? .active : .neutral,
+                    disabled: isProcessing || appState.activeRecording?.phase != .recording
+                ) { appState.toggleElementPicker() }
+
+                hudButton(
                     system: appState.activeRecording?.isPaused == true ? "play.fill" : "pause.fill",
                     help: appState.activeRecording?.isPaused == true ? "Resume" : "Pause",
                     kind: .neutral,
@@ -335,6 +342,25 @@ private struct CanvasToolbarView: View {
     private let colorSwatches = ["#EC6579", "#0A84FF", "#34C759", "#FF9F0A", "#1C1C1E"]
 
     var body: some View {
+        VStack(spacing: 5) {
+            toolbarRow
+            // Every canvas action is reachable without the mouse; this one line keeps
+            // the chords discoverable (all chords are Right Shift + key).
+            Text("R⇧ + 1–6 tools · X delete · Z undo · ⇥ cycle · arrows nudge · D,D clear · esc exit")
+                .synFont(.footnote)
+                .foregroundStyle(SynColor.text3)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(SynColor.materialBorder, lineWidth: 1)
+        )
+        .synShadow(0)
+    }
+
+    private var toolbarRow: some View {
         HStack(spacing: 7) {
             dragHandle
 
@@ -382,18 +408,10 @@ private struct CanvasToolbarView: View {
                 appState.clearAnnotations()
             }
 
-            toolbarButton(system: "xmark", help: "Exit canvas mode") {
+            toolbarButton(system: "xmark", help: "Exit canvas mode (esc)") {
                 appState.setCanvasMode(false)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(SynColor.materialBorder, lineWidth: 1)
-        )
-        .synShadow(0)
     }
 
     private var dragHandle: some View {

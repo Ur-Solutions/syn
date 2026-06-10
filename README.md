@@ -52,6 +52,26 @@ Global capture shortcuts:
 - `Left Shift + Right Shift + R`: open the capture picker.
 - `Left Shift + Right Shift`: press both Shift keys and release without pressing another key to repeat the last completed capture mode, or open the picker if no recording has completed yet. Repeat waits through a short suffix grace plus a brief input-drain pass, so `R` can still cancel pending repeat and open the picker when it is part of the same gesture.
 
+The capture picker opens as its own floating frosted panel, centered on the screen the cursor is on — it does not open inside the main Overview window. Clicking anywhere outside the panel (or pressing `Esc`) dismisses it.
+
+Capture picker shortcuts (while the picker is open):
+
+- `1`–`7` start the matching capture mode immediately, numbered top-left to bottom-right (Screen, All Screens, Active Window, Select Window, Region, Smart Region, Chrome Tab).
+- `Return` repeats the last capture (mode plus remembered window/region/tab).
+- `Esc` closes the picker.
+
+Region selector (Region / Smart Region):
+
+- Opens prefilled with the last confirmed region on its display, so `Return` immediately re-confirms it.
+- Drag anywhere outside the selection to draw a new rectangle; drag inside it to move it; drag any of the eight corner/edge handles to resize. A rule-of-thirds grid shows while drawing or resizing.
+- Arrow keys nudge the selection by 1 px (`Shift` for 10 px); `Option + arrows` resize instead of move.
+- `Return` or double-click confirms, `Esc` cancels; the floating bar at the bottom has the same Confirm/Cancel actions.
+
+Window selector (Select Window):
+
+- The window under the cursor is highlighted when the overlay opens; a single click on any window starts the recording immediately — no separate confirm step.
+- `Tab` / `Shift+Tab` or the arrow keys cycle the highlight through candidate windows; `Return` starts the highlighted window; `Esc` cancels.
+
 These shortcuts use a low-level listen-only HID event tap on a dedicated hotkey thread, with supplemental session, annotated-session, and AppKit key monitoring for R-key events. Syn reads the left/right Shift modifier bits from each keyboard event when macOS provides them, so duplicate modifier events do not accidentally fire repeat before the picker chord. While both Shifts are held, and again during the pending repeat window, Syn polls the physical R-key state so the picker can still win if macOS does not deliver a separate R event. If the repeat timer reaches its deadline just before an R event is processed, Syn performs a short input-drain pass before firing repeat. Accessibility permission must be granted to `~/Applications/Syn.app` for them to register.
 
 App-local packet commands:
@@ -71,6 +91,15 @@ Project context:
 - Settings can attach one local project folder to future packets.
 - When configured, each processed packet includes `project-context.md`, records it in `manifest.json` as `files.projectContext`, and embeds a bounded excerpt under `## Project Context` in `agent-prompt.md`.
 - The snapshot is metadata-oriented: root path, marker files such as `Package.swift`/`package.json`, git branch/commit/status/recent commits, top-level structure, and a README excerpt. It excludes common secret/heavy entries and does not embed source files.
+
+Processing latency model (interactive recordings):
+
+- For Screen, Region, Select Window, and Chrome Tab captures, click bubbles are burned into a parallel hardware encode WHILE the recording runs (a second stream output on the same ScreenCaptureKit stream; the raw recording is untouched). Stopping then only needs a passthrough remux of that live video with the raw audio track (~1s) instead of a full re-encode. Frames with no active bubble pass to the encoder untouched; only the ~20 frames around each click are copied and composited. Live-rendered output is variable-frame-rate (frames arrive on screen change) and skips the offline render's 24 px window padding; any live-encode irregularity (size mismatch, missing segments, duration divergence) falls back to the offline render automatically. Canvas-mode annotations and the dynamic-crop modes (Active Window follow, Smart Region) always use the offline render.
+- Narration is transcribed WHILE the recording runs: the mic-meter tap feeds a streaming transcriber that cuts ~20 s chunks at silence points and runs each through the bundled whisper-cli in the background. Stopping only transcribes the final partial chunk (~1–2 s, overlapped with the video finalize). An empty or failed stream falls back to the full offline transcription.
+- The packet folder is revealed as soon as the local critical path finishes: merge → (processed render ∥ frame extraction+OCR ∥ transcription) → instant visual-change frame selection → manifest/prompts. No model calls block the reveal.
+- Frame extraction reads the raw recording in parallel with the render for all modes except Active Window follow and Smart Region (whose final framing is a moving crop, so they extract from the rendered output afterward).
+- After the reveal, `runDeferredFinalize` refines the frame selection with the OpenAI semantic plan (updating `frames/candidates/metadata.json`, the semantic timeline, `manifest.json`, and the agent prompts), then generates the layered summary tiers concurrently, then creates the shareable zip. `progress.md` tracks each stage live.
+- Per-stage wall-clock timings stream to `~/Library/Logs/Syn/perf.log` (or `./script/build_and_run.sh --telemetry`) and are recorded in `manifest.json` under `processing.stageTimings`.
 
 Semantic timeline:
 
@@ -132,6 +161,12 @@ To photograb the recording HUD and canvas toolbar directly:
 ```bash
 SYN_UI_SHOW_CANVAS_TOOLBAR=1 ./script/capture_syn_ui.sh build/ui-captures/syn-canvas-toolbar-current.png
 ```
+
+Canvas mode is fully hotkey-driven (all chords are `Right Shift + key`): `C` toggles canvas, `1–6` pick tools, `X` deletes the selected stroke (or the most recent when none is selected), `Z` undoes the last stroke, `Tab` cycles stroke selection, arrow keys nudge the selected stroke 8 px, `D, D` clears the canvas, `Esc` exits. The toolbar shows this key map.
+
+Element picker (`Right Shift + E` during a recording, or the scope button in the HUD): hover highlights the macOS Accessibility element under the cursor, click flags it (click again to unflag), `Esc` exits. Flagged elements are stored in `elements/flagged-elements.json` (role, label, identifier, app, bounds, video coordinates), listed under `## Flagged Elements` in the agent prompts, and burned into `recording.mp4` as rose highlights around their flag timestamps. See `docs/ELEMENT_INTELLIGENCE_PRD.md` (this is MVP 1; browser DOM and React providers are future scope).
+
+Candidate frames are also sampled live during recording for the live-render modes (hash, visual-change gate, OCR, and frame encodes all happen during capture), so stop-time frame extraction collapses to a file move.
 
 The HUD includes a Canvas Mode toggle. Canvas Mode opens a draggable toolbar below the HUD with pen, line, rectangle, ellipse, text, delete selected, clear, and exit controls. The discard (trash) control is a two-step confirm: the first click arms it (the icon turns red), and a second click within a few seconds discards the in-progress recording without producing a packet. The smoke fixture verifies pen, line, rectangle, ellipse, and text metadata plus burned-in annotation overlays in `recording.mp4`.
 

@@ -28,9 +28,11 @@ final class MainWindowController {
             window.isReleasedWhenClosed = false
             window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
             self.window = window
+            // Center only on first creation; re-centering on every show makes
+            // the window jump displays on multi-monitor setups.
+            window.center()
         }
 
-        window?.center()
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)

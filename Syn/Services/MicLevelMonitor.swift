@@ -4,7 +4,12 @@ import Foundation
 final class MicLevelMonitor {
     private var engine: AVAudioEngine?
 
-    func start(onLevel: @escaping @MainActor (Double) -> Void) throws {
+    /// `onBuffer` (optional) receives every raw PCM buffer on the audio thread —
+    /// the streaming transcriber rides the same tap as the level meter.
+    func start(
+        onLevel: @escaping @MainActor (Double) -> Void,
+        onBuffer: ((AVAudioPCMBuffer) -> Void)? = nil
+    ) throws {
         stop()
 
         let engine = AVAudioEngine()
@@ -15,6 +20,7 @@ final class MicLevelMonitor {
         }
 
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            onBuffer?(buffer)
             let level = Self.normalizedLevel(from: buffer)
             Task { @MainActor in
                 onLevel(level)

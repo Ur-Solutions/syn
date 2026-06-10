@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import AVFoundation
 import Carbon
+import Combine
 import SwiftUI
 import UserNotifications
 
@@ -29,6 +30,8 @@ final class AppState: ObservableObject {
     @Published var chromeTabSelectionError: String?
     @Published var defaultPromptProfile: AgentPromptProfile = .generalCoding
     @Published var isCanvasModeEnabled = false
+    @Published var isElementPickerEnabled = false
+    @Published var flaggedElements: [FlaggedElementSnapshot] = []
     @Published var selectedAnnotationTool: AnnotationTool?
     @Published var canvasColorHex = "#EC6579"
     @Published var selectedAnnotationStrokeID: UUID?
@@ -53,11 +56,13 @@ final class AppState: ObservableObject {
     private let annotationRecorder = AnnotationRecorder()
     private let activeWindowTracker = ActiveWindowTracker()
     private let micLevelMonitor = MicLevelMonitor()
+    private let streamingTranscriber = StreamingTranscriber()
     private let packetProcessor = PacketProcessor()
     private var currentPacket: PacketContext?
     private var pauseIntervals: [PauseInterval] = []
     private var currentPermissionNotes: [String] = []
     private var appPreferences = AppPreferencesStore.load()
+    private var cancellables: Set<AnyCancellable> = []
     private var lastRegion: RegionSelection?
     private var lastSelectedWindowID: CGWindowID?
     private var lastSelectedWindowTarget: SelectedWindowTarget?
@@ -125,6 +130,22 @@ final class AppState: ObservableObject {
             return
         }
 
+        // The capture picker lives in its own floating frosted panel; every
+        // code path that flips this flag gets the panel shown/hidden for free.
+        $isCapturePickerPresented
+            .removeDuplicates()
+            .sink { [weak self] presented in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if presented {
+                        CapturePickerPanelController.shared.show(appState: self)
+                    } else {
+                        CapturePickerPanelController.shared.hide()
+                    }
+                }
+            }
+            .store(in: &cancellables)
+
         recentPackets = PacketHistoryRecovery.recover(PacketHistoryStore.load())
         selectedPacketID = recentPackets.first?.id
         lastCaptureMode = appPreferences.lastCaptureMode
@@ -166,12 +187,61 @@ final class AppState: ObservableObject {
         }
         GlobalHotkeyService.shared.onExitCanvasMode = { [weak self] in
             Task { @MainActor in
-                self?.setCanvasMode(false)
+                guard let self else { return }
+                if self.isElementPickerEnabled {
+                    self.setElementPicker(false)
+                } else {
+                    self.setCanvasMode(false)
+                }
             }
         }
         GlobalHotkeyService.shared.onSelectCanvasTool = { [weak self] tool in
             Task { @MainActor in
                 self?.selectCanvasTool(tool)
+            }
+        }
+        GlobalHotkeyService.shared.onDeleteSelectedAnnotation = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.isCanvasModeEnabled else { return }
+                if self.selectedAnnotationStrokeID != nil {
+                    self.deleteSelectedAnnotation()
+                } else if let last = self.visibleAnnotationStrokes.last {
+                    self.selectAnnotationStroke(id: last.id)
+                    self.deleteSelectedAnnotation()
+                }
+            }
+        }
+        GlobalHotkeyService.shared.onUndoAnnotation = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.isCanvasModeEnabled,
+                      let last = self.visibleAnnotationStrokes.last else { return }
+                self.selectAnnotationStroke(id: last.id)
+                self.deleteSelectedAnnotation()
+            }
+        }
+        GlobalHotkeyService.shared.onCycleAnnotationSelection = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.isCanvasModeEnabled else { return }
+                let strokes = self.visibleAnnotationStrokes
+                guard !strokes.isEmpty else { return }
+                if let current = self.selectedAnnotationStrokeID,
+                   let index = strokes.firstIndex(where: { $0.id == current }) {
+                    self.selectAnnotationStroke(id: strokes[(index + 1) % strokes.count].id)
+                } else {
+                    self.selectAnnotationStroke(id: strokes.first?.id)
+                }
+            }
+        }
+        GlobalHotkeyService.shared.onNudgeSelectedAnnotation = { [weak self] dx, dy in
+            Task { @MainActor in
+                guard let self, self.isCanvasModeEnabled,
+                      let selected = self.selectedAnnotationStrokeID else { return }
+                self.moveAnnotationStroke(id: selected, by: CGSize(width: dx, height: dy))
+            }
+        }
+        GlobalHotkeyService.shared.onToggleElementPicker = { [weak self] in
+            Task { @MainActor in
+                self?.toggleElementPicker()
             }
         }
         GlobalHotkeyService.shared.onClearCanvas = { [weak self] in
@@ -252,7 +322,8 @@ final class AppState: ObservableObject {
             return
         }
 
-        showMainWindow()
+        // The picker pops as its own floating panel; the main window stays
+        // wherever it is (possibly closed).
         isChromeTabPickerPresented = false
         isCapturePickerPresented = true
     }
@@ -947,6 +1018,42 @@ final class AppState: ObservableObject {
         AnnotationOverlayController.shared.update(appState: self)
     }
 
+    func toggleElementPicker() {
+        setElementPicker(!isElementPickerEnabled)
+    }
+
+    func setElementPicker(_ enabled: Bool) {
+        if enabled {
+            guard activeRecording?.phase == .recording else {
+                statusMessage = "Element picker is available while recording."
+                return
+            }
+            if isCanvasModeEnabled {
+                setCanvasMode(false)
+            }
+        }
+        guard isElementPickerEnabled != enabled else { return }
+        isElementPickerEnabled = enabled
+        ElementPickerController.shared.setActive(enabled, appState: self)
+        GlobalHotkeyService.shared.setCanvasModeActive(enabled || isCanvasModeEnabled)
+        RecordingHUDController.shared.update(appState: self)
+        statusMessage = enabled
+            ? "Element picker on — click UI elements to flag them."
+            : nil
+    }
+
+    func appendFlaggedElement(_ snapshot: FlaggedElementSnapshot) {
+        flaggedElements.append(snapshot)
+        statusMessage = "Flagged element \(snapshot.index): \(snapshot.label ?? snapshot.role ?? "element")"
+    }
+
+    func removeFlaggedElement(id: UUID) {
+        flaggedElements.removeAll { $0.id == id }
+        for (offset, _) in flaggedElements.enumerated() {
+            flaggedElements[offset].index = offset + 1
+        }
+    }
+
     func deleteSelectedAnnotation() {
         guard let selectedAnnotationStrokeID else { return }
         annotationRecorder.deleteStroke(id: selectedAnnotationStrokeID)
@@ -1144,7 +1251,23 @@ final class AppState: ObservableObject {
 
     private func beginRegionSelection(initialSelection: CGRect? = nil, captureMode: CaptureMode = .region) {
         statusMessage = "Select a region..."
-        RegionSelectionController.shared.begin(initialSelection: initialSelection) { [weak self] selection in
+        // Prefill the previous region so a returning user can confirm with a
+        // single Return (or adjust the handles) instead of redrawing each time.
+        // Fixture modes drive synthetic input against an empty overlay, so they
+        // must not start with a selection present.
+        let isFixtureDriven = isSelectorConfirmObserverMode
+            || selectorInputFixtureMode != nil
+            || selectorRecordingFixtureMode != nil
+        var prefillRect = initialSelection
+        var prefillDisplayID: CGDirectDisplayID?
+        if prefillRect == nil, !isFixtureDriven, let lastRegion {
+            prefillRect = lastRegion.rect
+            prefillDisplayID = lastRegion.displayID
+        }
+        RegionSelectionController.shared.begin(
+            initialSelection: prefillRect,
+            initialDisplayID: prefillDisplayID
+        ) { [weak self] selection in
             Task { @MainActor in
                 guard let self else { return }
                 guard let selection else {
@@ -1271,6 +1394,15 @@ final class AppState: ObservableObject {
             annotationRecorder.start()
             resetCanvasState()
             activeWindowTracker.start()
+            // Streamed transcription chunks land under raw/ so they never appear in zips.
+            streamingTranscriber.start(
+                workDirectory: context.rawURL.appendingPathComponent("stream-transcribe", isDirectory: true)
+            )
+            flaggedElements = []
+            if isElementPickerEnabled {
+                isElementPickerEnabled = false
+                ElementPickerController.shared.setActive(false, appState: self)
+            }
             startMicMeter()
 
             let recording = ActiveRecording(
@@ -1308,6 +1440,7 @@ final class AppState: ObservableObject {
             _ = activeWindowTracker.stop()
             stopDurationWarningMonitor()
             stopMicMeter()
+            streamingTranscriber.cancel()
             RecordingHUDController.shared.hide()
             _ = annotationRecorder.stop()
             resetCanvasState()
@@ -1420,7 +1553,16 @@ final class AppState: ObservableObject {
             let annotations = annotationRecorder.stop()
             failureAnnotations = annotations
             resetCanvasState()
+            if isElementPickerEnabled {
+                setElementPicker(false)
+            }
             stopMicMeter()
+            // Tail-chunk transcription starts now and overlaps the recorder finalize and
+            // the whole processing pipeline; transcribeFromRaw awaits it in its own branch.
+            let transcriber = streamingTranscriber
+            let streamingTranscriptTask = Task.detached(priority: .userInitiated) {
+                await transcriber.finish()
+            }
             let activeWindowSamples = activeWindowTracker.stop()
             failureActiveWindowSamples = activeWindowSamples
             let recorderStopStart = Date()
@@ -1480,7 +1622,14 @@ final class AppState: ObservableObject {
                 annotations: annotations,
                 activeWindowSamples: activeWindowSamples,
                 pauses: pauseIntervals,
-                deferFinalize: !isFixtureProcessing
+                deferFinalize: !isFixtureProcessing,
+                // Click bubbles burned during capture make finalize a passthrough remux,
+                // and the streamed transcript replaces the offline whisper pass. Fixture
+                // processing keeps the offline paths so its contracts stay exact.
+                liveRender: isFixtureProcessing ? nil : recorder.liveRenderArtifact,
+                liveFrames: isFixtureProcessing ? nil : recorder.liveFrameArtifact,
+                streamingTranscript: isFixtureProcessing ? nil : streamingTranscriptTask,
+                flaggedElements: flaggedElements
             )
             SynPerf.log("packetProcessor.process (merge + pipeline)", seconds: Date().timeIntervalSince(processStart))
 
@@ -1539,6 +1688,7 @@ final class AppState: ObservableObject {
             let pointerEvents = failurePointerEvents.isEmpty ? pointerRecorder.stop() : failurePointerEvents
             let annotations = failureAnnotations.isEmpty ? annotationRecorder.stop() : failureAnnotations
             stopMicMeter()
+            streamingTranscriber.cancel()
             let activeWindowSamples = failureActiveWindowSamples.isEmpty ? activeWindowTracker.stop() : failureActiveWindowSamples
             let capture = failureCapture ?? recorder.sourceMetadata ?? CaptureSourceMetadata(
                 mode: recording.mode.rawValue,
@@ -1619,6 +1769,7 @@ final class AppState: ObservableObject {
         _ = annotationRecorder.stop()
         _ = activeWindowTracker.stop()
         stopMicMeter()
+        streamingTranscriber.cancel()
 
         // Cancel any fixture auto-stop tasks so they cannot fire after discard.
         selectorRecordingStopTask?.cancel()
@@ -2229,11 +2380,17 @@ final class AppState: ObservableObject {
     }
 
     private func startMicMeter() {
+        let transcriber = streamingTranscriber
         do {
-            try micLevelMonitor.start { [weak self] level in
-                self?.micLevel = level
-                self?.isMicMeterActive = true
-            }
+            try micLevelMonitor.start(
+                onLevel: { [weak self] level in
+                    self?.micLevel = level
+                    self?.isMicMeterActive = true
+                },
+                onBuffer: { buffer in
+                    transcriber.ingest(buffer: buffer)
+                }
+            )
         } catch {
             micLevel = 0
             isMicMeterActive = false

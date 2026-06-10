@@ -34,7 +34,11 @@ final class PacketProcessor {
         annotations: [AnnotationStroke],
         activeWindowSamples: [ActiveWindowSample],
         pauses: [PauseInterval],
-        deferFinalize: Bool = false
+        deferFinalize: Bool = false,
+        liveRender: LiveRenderArtifact? = nil,
+        liveFrames: LiveFrameSamplingArtifact? = nil,
+        streamingTranscript: Task<StreamingTranscriptResult?, Never>? = nil,
+        flaggedElements: [FlaggedElementSnapshot] = []
     ) async throws -> PacketProcessingResult {
         var stageTimings: [ProcessingStageTiming] = []
 
@@ -62,7 +66,11 @@ final class PacketProcessor {
             pauses: pauses,
             duration: duration,
             initialStageTimings: stageTimings,
-            deferFinalize: deferFinalize
+            deferFinalize: deferFinalize,
+            liveRender: liveRender,
+            liveFrames: liveFrames,
+            streamingTranscript: streamingTranscript,
+            flaggedElements: flaggedElements
         )
     }
 
@@ -99,6 +107,12 @@ final class PacketProcessor {
     /// created. Owned by the long-lived app so it is not killed mid-flight.
     func runDeferredFinalize(context: PacketContext, capture: CaptureSourceMetadata) async {
         let transcript = (try? String(contentsOf: context.transcriptURL, encoding: .utf8)) ?? ""
+
+        // Phase 1: refine the instant heuristic frame selection with the OpenAI semantic plan.
+        // This used to sit on the reveal critical path; the packet is already usable with the
+        // heuristic selection, and the summary tiers below pick up the refined frames.
+        await refineFramePlan(context: context, transcript: transcript)
+
         let frames = reloadSelectedFrames(context: context)
         let lineups = progressiveLineups()
 
@@ -176,6 +190,59 @@ final class PacketProcessor {
         outcome.tier.rank
     }
 
+    /// Background semantic frame refinement: rebuild the extraction from disk, run the OpenAI
+    /// plan, prune the now-unselected candidate files, rewrite the frame/semantic artifacts, and
+    /// refresh the manifest + prompts so agents see the refined selection.
+    private func refineFramePlan(context: PacketContext, transcript: String) async {
+        guard let data = try? Data(contentsOf: context.candidateMetadataURL),
+              let candidates = try? JSONDecoder.synDecoder.decode([CandidateFrameMetadata].self, from: data),
+              !candidates.isEmpty else {
+            return
+        }
+
+        let manifestDuration = loadManifest(context: context)?.duration
+        let duration = manifestDuration ?? (candidates.map(\.timestamp).max() ?? 0)
+        // Offer the planner every candidate whose image files still exist — the deferred path
+        // skips pruning precisely so the semantic plan can choose from the full visual-change
+        // pool, not just the heuristic top picks shown at reveal time.
+        let extraction = FrameExtractionResult(
+            candidateFrames: candidates,
+            selectedFrames: candidates.filter { $0.compressedPath != nil },
+            duration: duration
+        )
+
+        let started = Date()
+        var plan = await framePlanningService.planFrames(
+            extraction: extraction,
+            transcript: transcript,
+            context: context
+        )
+        SynPerf.log("deferred frame plan (\(plan.provider))", seconds: Date().timeIntervalSince(started))
+
+        plan.candidateFrames = pruneUnselectedFrameFiles(plan.candidateFrames, context: context)
+        plan.selectedFrames = plan.candidateFrames.filter(\.selected)
+        plan.semanticSegments = makeSemanticSegmentsIfNeeded(
+            plan.semanticSegments,
+            selectedFrames: plan.selectedFrames,
+            duration: duration,
+            source: plan.provider
+        )
+        try? JSONEncoder.synEncoder.encode(plan.candidateFrames).write(to: context.candidateMetadataURL)
+        try? writeSemanticArtifacts(context: context, segments: plan.semanticSegments)
+
+        guard let manifestData = try? Data(contentsOf: context.manifestURL),
+              var manifest = try? JSONDecoder.synDecoder.decode(PacketManifest.self, from: manifestData) else {
+            return
+        }
+        manifest.processing.frameSelectionProvider = plan.provider
+        manifest.processing.frameSelectionModel = plan.model
+        manifest.processing.notes.append(contentsOf: plan.notes)
+        try? JSONEncoder.synEncoder.encode(manifest).write(to: context.manifestURL)
+        if let prompt = try? writeAgentPrompts(context: context, manifest: manifest) {
+            copyToClipboard(prompt, folderURL: context.folderURL)
+        }
+    }
+
     private func reloadSelectedFrames(context: PacketContext) -> [CandidateFrameMetadata] {
         guard let data = try? Data(contentsOf: context.candidateMetadataURL),
               let frames = try? JSONDecoder.synDecoder.decode([CandidateFrameMetadata].self, from: data) else {
@@ -217,7 +284,8 @@ final class PacketProcessor {
         lineups: [(name: String, tiers: [SummaryTier])],
         outcomes: [SummaryTierOutcome],
         zipReady: Bool,
-        summaryComplete: Bool
+        summaryComplete: Bool,
+        frameSelectionStatus: String = "ready"
     ) {
         let totalTiers = lineups.reduce(0) { $0 + $1.tiers.count }
         let doneTiers = outcomes.count
@@ -246,6 +314,7 @@ final class PacketProcessor {
         ## Stages
 
         - Recording / transcript / frames / manifest: ready
+        - Frame selection: \(frameSelectionStatus)
         - Summary: \(summaryComplete ? "complete" : "\(doneTiers)/\(totalTiers) tiers done") — best so far: \(bestLabel)
         - Shareable zip: \(zipReady ? "ready" : "pending")
 
@@ -421,7 +490,11 @@ final class PacketProcessor {
         pauses: [PauseInterval],
         duration: TimeInterval,
         initialStageTimings: [ProcessingStageTiming] = [],
-        deferFinalize: Bool = false
+        deferFinalize: Bool = false,
+        liveRender: LiveRenderArtifact? = nil,
+        liveFrames: LiveFrameSamplingArtifact? = nil,
+        streamingTranscript: Task<StreamingTranscriptResult?, Never>? = nil,
+        flaggedElements: [FlaggedElementSnapshot] = []
     ) async throws -> PacketProcessingResult {
         var processingNotes: [String] = []
         var stageTimings = initialStageTimings
@@ -436,19 +509,48 @@ final class PacketProcessor {
         // raw merged recording. They have no mutual data dependency and write disjoint files,
         // so run them concurrently and join before frame planning. This collapses the two
         // longest independent stages into one wall-clock window.
+        // Flagged elements burn into the video through the annotation pipeline as
+        // synthetic rectangles (forcing the offline render); they are stripped from
+        // annotation metadata afterwards by ID.
+        let elementStrokes = flaggedElements.map { $0.syntheticStroke(recordingDuration: duration) }
+        let syntheticIDs = Set(elementStrokes.map(\.id))
         async let videoBranch = renderAndExtract(
             context: context,
             capture: capture,
             pointerEvents: pointerEvents,
-            annotations: annotations,
+            annotations: annotations + elementStrokes,
             activeWindowSamples: activeWindowSamples,
-            duration: duration
+            duration: duration,
+            liveRender: liveRender,
+            liveFrames: liveFrames
         )
-        async let transcriptBranch = transcribeFromRaw(context: context)
+        async let transcriptBranch = transcribeFromRaw(context: context, streamingTranscript: streamingTranscript)
 
         let video = await videoBranch
         let transcript = await transcriptBranch
-        let processedVideo = video.processedVideo
+        var processedVideo = video.processedVideo
+        if !syntheticIDs.isEmpty {
+            var enriched = flaggedElements
+            for stroke in processedVideo.annotations where syntheticIDs.contains(stroke.id) {
+                if let points = stroke.videoPoints, points.count >= 2,
+                   let index = enriched.firstIndex(where: { $0.id == stroke.id }) {
+                    let xs = points.map(\.x)
+                    let ys = points.map(\.y)
+                    enriched[index].videoBounds = CodableRect(CGRect(
+                        x: xs.min() ?? 0,
+                        y: ys.min() ?? 0,
+                        width: (xs.max() ?? 0) - (xs.min() ?? 0),
+                        height: (ys.max() ?? 0) - (ys.min() ?? 0)
+                    ))
+                }
+            }
+            processedVideo.annotations.removeAll { syntheticIDs.contains($0.id) }
+            let elementsDirectory = context.folderURL.appendingPathComponent("elements", isDirectory: true)
+            try? FileManager.default.createDirectory(at: elementsDirectory, withIntermediateDirectories: true)
+            try? JSONEncoder.synEncoder.encode(enriched)
+                .write(to: elementsDirectory.appendingPathComponent("flagged-elements.json"))
+            processingNotes.append("Element intelligence flagged \(flaggedElements.count) element(s); see elements/flagged-elements.json. Highlights are burned into recording.mp4 at their flag timestamps.")
+        }
         let frameResult = video.frameResult
         let transcriptResult = transcript.result
         processingNotes.append(contentsOf: video.notes)
@@ -456,20 +558,16 @@ final class PacketProcessor {
         stageTimings.append(contentsOf: video.timings)
         stageTimings.append(contentsOf: transcript.timings)
 
-        // The OpenAI frame plan is always run synchronously (it determines the packet's selected
-        // frames + semantic timeline). The Claude/GPT summary is DEFERRED for interactive
-        // recordings: it is the dominant cost (output-generation-bound) and is produced in layered
-        // tiers in the background after the folder is revealed (see runDeferredFinalize).
+        // For interactive recordings BOTH model calls are deferred: the packet reveals with the
+        // extractor's instant visual-change frame selection, then runDeferredFinalize refines the
+        // selection with the OpenAI semantic plan and generates the layered summary in the
+        // background. The OpenAI plan alone was ~12s of critical-path wall clock.
         var framePlanningResult: FramePlanningResult
         let summaryResult: SummaryResult
         if deferFinalize {
             let framePlanStart = Date()
-            framePlanningResult = await framePlanningService.planFrames(
-                extraction: frameResult,
-                transcript: transcriptResult.markdown,
-                context: context
-            )
-            stageTimings.append(processingTiming("plan-semantic-frames-openai", startedAt: framePlanStart))
+            framePlanningResult = framePlanningService.heuristicPlan(extraction: frameResult)
+            stageTimings.append(processingTiming("plan-frames-heuristic", startedAt: framePlanStart))
             summaryResult = SummaryResult(
                 markdown: "",
                 provider: "pending",
@@ -500,13 +598,16 @@ final class PacketProcessor {
         }
         processingNotes.append(contentsOf: framePlanningResult.notes)
 
-        // Prune unselected frame files after the frame plan. The deferred summary reloads the
-        // surviving selected frames from disk, so the prune is safe before it runs.
+        // Prune unselected frame files after the frame plan — but only when the plan is final.
+        // The deferred path keeps every candidate's files on disk so the background semantic
+        // refinement can still promote any of them; it prunes after the refined plan lands.
         let semanticArtifactsStart = Date()
-        framePlanningResult.candidateFrames = pruneUnselectedFrameFiles(
-            framePlanningResult.candidateFrames,
-            context: context
-        )
+        if !deferFinalize {
+            framePlanningResult.candidateFrames = pruneUnselectedFrameFiles(
+                framePlanningResult.candidateFrames,
+                context: context
+            )
+        }
         framePlanningResult.selectedFrames = framePlanningResult.candidateFrames.filter(\.selected)
         framePlanningResult.semanticSegments = makeSemanticSegmentsIfNeeded(
             framePlanningResult.semanticSegments,
@@ -548,7 +649,8 @@ final class PacketProcessor {
                 lineups: progressiveLineups(),
                 outcomes: [],
                 zipReady: false,
-                summaryComplete: false
+                summaryComplete: false,
+                frameSelectionStatus: "instant visual-change selection — semantic refinement running in background"
             )
             stageTimings.append(wallClockTiming())
             processingNotes.append(stageTimingSummary(stageTimings))
@@ -640,20 +742,98 @@ final class PacketProcessor {
 
     /// Video branch: render the processed recording, persist overlay metadata, and extract
     /// frames + OCR. Needs a video and runs concurrently with `transcribeFromRaw`.
+    ///
+    /// For static-geometry modes (everything except the Active Window / Smart Region moving
+    /// crops) the raw recording frames match the final video's framing, so frame extraction
+    /// reads the RAW recording and runs in parallel with the render instead of after it —
+    /// extraction is no longer on the video branch's critical path. Dynamic-crop modes keep
+    /// the sequential extract-from-final order because their final framing differs.
     private func renderAndExtract(
         context: PacketContext,
         capture: CaptureSourceMetadata,
         pointerEvents: [PointerEvent],
         annotations: [AnnotationStroke],
         activeWindowSamples: [ActiveWindowSample],
-        duration: TimeInterval
+        duration: TimeInterval,
+        liveRender: LiveRenderArtifact? = nil,
+        liveFrames: LiveFrameSamplingArtifact? = nil
     ) async -> (processedVideo: ProcessedVideoResult, frameResult: FrameExtractionResult, notes: [String], timings: [ProcessingStageTiming]) {
         var notes: [String] = []
         var timings: [ProcessingStageTiming] = []
 
+        // Frames sampled during the recording replace extraction entirely: move the staged
+        // files into frames/, enrich with per-timestamp window context, write metadata.
+        var liveFrameResult: FrameExtractionResult?
+        if let liveFrames, liveFrames.usable {
+            let liveFramesStart = Date()
+            liveFrameResult = try? adoptLiveSampledFrames(
+                liveFrames,
+                context: context,
+                capture: capture,
+                activeWindowSamples: activeWindowSamples,
+                duration: duration
+            )
+            if liveFrameResult != nil {
+                notes.append("Candidate frames were sampled live during the recording; stop-time extraction was skipped.")
+                timings.append(processingTiming("extract-frames-live-adopt", startedAt: liveFramesStart))
+                SynPerf.log("live frame adoption", seconds: Date().timeIntervalSince(liveFramesStart))
+            }
+        }
+        if let liveFrames {
+            try? FileManager.default.removeItem(at: liveFrames.stagingDirectory)
+        }
+
+        let extractFromRawInParallel = liveFrameResult == nil && !VideoUtilities.usesDynamicCropRender(
+            capture: capture,
+            activeWindowSamples: activeWindowSamples
+        )
+
+        async let parallelExtraction: (FrameExtractionResult?, Double) = {
+            guard extractFromRawInParallel else {
+                return (nil, 0)
+            }
+            let started = Date()
+            let result = try? await self.frameExtractor.extractFrames(
+                from: context.rawRecordingURL,
+                context: context,
+                capture: capture,
+                activeWindowSamples: activeWindowSamples
+            )
+            return (result, Date().timeIntervalSince(started))
+        }()
+
+        // Fast path: click bubbles were already burned during capture, so finalize is a
+        // passthrough remux of the live segments + raw audio (≈1s instead of a re-encode).
+        // Annotations are not live-composited, so canvas recordings take the offline path.
+        var liveProcessedVideo: ProcessedVideoResult?
+        if let liveRender, liveRender.usable, annotations.isEmpty {
+            let liveFinalizeStart = Date()
+            do {
+                liveProcessedVideo = try await VideoUtilities.fastFinalizeLiveRender(
+                    liveSegmentURLs: liveRender.segmentURLs,
+                    rawURL: context.rawRecordingURL,
+                    finalURL: context.finalRecordingURL,
+                    capture: capture,
+                    pointerEvents: pointerEvents,
+                    renderedClickCount: liveRender.renderedClickCount
+                )
+                timings.append(processingTiming("finalize-live-render-remux", startedAt: liveFinalizeStart))
+                SynPerf.log("live render fast finalize", seconds: Date().timeIntervalSince(liveFinalizeStart))
+            } catch {
+                notes.append("Live render finalize failed (\(error.localizedDescription)); fell back to the offline render.")
+            }
+        }
+        cleanUpLiveRenderSegments(context: context)
+
         let processedVideo: ProcessedVideoResult
         let renderStart = Date()
-        do {
+        if let liveProcessedVideo {
+            processedVideo = liveProcessedVideo
+            notes.append(contentsOf: liveProcessedVideo.notes)
+            if liveProcessedVideo.renderedClickCount > 0 {
+                notes.append("Rendered \(liveProcessedVideo.renderedClickCount) click bubble overlays into recording.mp4 live during capture.")
+            }
+        } else { do {
             processedVideo = try await VideoUtilities.renderProcessedRecording(
                 rawURL: context.rawRecordingURL,
                 finalURL: context.finalRecordingURL,
@@ -681,42 +861,159 @@ final class PacketProcessor {
                 renderedAnnotationCount: 0,
                 notes: []
             )
-        }
-        timings.append(processingTiming("render-processed-video", startedAt: renderStart))
+        } }
+        timings.append(processingTiming(
+            liveProcessedVideo != nil ? "render-processed-video-live" : "render-processed-video",
+            startedAt: renderStart
+        ))
 
         let overlayMetadataStart = Date()
         try? JSONEncoder.synEncoder.encode(processedVideo.pointerEvents).write(to: context.pointerEventsURL)
         try? JSONEncoder.synEncoder.encode(processedVideo.annotations).write(to: context.annotationEventsURL)
         timings.append(processingTiming("write-pointer-and-annotation-metadata", startedAt: overlayMetadataStart))
 
-        let frameResult: FrameExtractionResult
-        let frameExtractionStart = Date()
-        do {
-            frameResult = try await frameExtractor.extractFrames(
-                from: context.finalRecordingURL,
-                context: context,
-                capture: capture,
-                activeWindowSamples: activeWindowSamples
-            )
-        } catch {
-            notes.append("Frame extraction failed: \(error.localizedDescription)")
-            let emptyFrames: [CandidateFrameMetadata] = []
-            try? JSONEncoder.synEncoder.encode(emptyFrames).write(to: context.candidateMetadataURL)
-            frameResult = FrameExtractionResult(candidateFrames: [], selectedFrames: [], duration: duration)
+        var frameResult: FrameExtractionResult? = liveFrameResult
+        let (rawExtraction, rawExtractionSeconds) = await parallelExtraction
+        if frameResult == nil, let rawExtraction {
+            frameResult = rawExtraction
+            notes.append("Frames were extracted from the raw capture in parallel with the render (pre-overlay framing).")
+            timings.append(ProcessingStageTiming(name: "extract-frames-and-ocr", durationSeconds: rawExtractionSeconds))
         }
-        timings.append(processingTiming("extract-frames-and-ocr", startedAt: frameExtractionStart))
 
-        return (processedVideo, frameResult, notes, timings)
+        if frameResult == nil {
+            let frameExtractionStart = Date()
+            do {
+                frameResult = try await frameExtractor.extractFrames(
+                    from: context.finalRecordingURL,
+                    context: context,
+                    capture: capture,
+                    activeWindowSamples: activeWindowSamples
+                )
+            } catch {
+                notes.append("Frame extraction failed: \(error.localizedDescription)")
+                let emptyFrames: [CandidateFrameMetadata] = []
+                try? JSONEncoder.synEncoder.encode(emptyFrames).write(to: context.candidateMetadataURL)
+                frameResult = FrameExtractionResult(candidateFrames: [], selectedFrames: [], duration: duration)
+            }
+            timings.append(processingTiming("extract-frames-and-ocr", startedAt: frameExtractionStart))
+        }
+
+        return (processedVideo, frameResult ?? FrameExtractionResult(candidateFrames: [], selectedFrames: [], duration: duration), notes, timings)
+    }
+
+    /// Adopts frames sampled during the recording: moves staged PNG/JPEGs into frames/,
+    /// fills in per-timestamp app/window context, and writes candidate metadata — the
+    /// entire offline extraction collapses into file moves.
+    private func adoptLiveSampledFrames(
+        _ artifact: LiveFrameSamplingArtifact,
+        context: PacketContext,
+        capture: CaptureSourceMetadata,
+        activeWindowSamples: [ActiveWindowSample],
+        duration: TimeInterval
+    ) throws -> FrameExtractionResult {
+        var metadata: [CandidateFrameMetadata] = []
+        for frame in artifact.frames {
+            var fullPath: String?
+            var compressedPath: String?
+            var fullBytes: Int?
+            var compressedBytes: Int?
+
+            if let fullFileName = frame.fullFileName {
+                let destination = context.fullFramesURL.appendingPathComponent(fullFileName)
+                try FileManager.default.moveItem(
+                    at: artifact.stagingDirectory.appendingPathComponent(fullFileName),
+                    to: destination
+                )
+                fullPath = FrameExtractor.relativePath(destination, base: context.folderURL)
+                fullBytes = FrameExtractor.fileSize(destination)
+            }
+            if let compressedFileName = frame.compressedFileName {
+                let destination = context.compressedFramesURL.appendingPathComponent(compressedFileName)
+                try FileManager.default.moveItem(
+                    at: artifact.stagingDirectory.appendingPathComponent(compressedFileName),
+                    to: destination
+                )
+                compressedPath = FrameExtractor.relativePath(destination, base: context.folderURL)
+                compressedBytes = FrameExtractor.fileSize(destination)
+            }
+
+            let sample = activeWindowSamples.last(where: { $0.timestamp <= frame.timestamp }) ?? activeWindowSamples.first
+            metadata.append(CandidateFrameMetadata(
+                timestamp: frame.timestamp,
+                fullPath: fullPath,
+                compressedPath: compressedPath,
+                candidatePath: nil,
+                fullSize: frame.fullSize,
+                compressedSize: frame.compressedSize,
+                candidateSize: nil,
+                fullBytes: fullBytes,
+                compressedBytes: compressedBytes,
+                candidateBytes: nil,
+                perceptualHash: String(format: "%016llx", frame.perceptualHash),
+                pixelDifferenceFromPrevious: frame.pixelDifferenceFromPrevious,
+                appName: sample?.appName ?? capture.appName,
+                windowTitle: sample?.windowTitle ?? capture.windowTitle,
+                captureBounds: capture.sourceRect,
+                ocrText: frame.ocr.text,
+                ocrMeanConfidence: frame.ocr.meanConfidence,
+                ocrObservations: frame.ocr.observations.isEmpty ? nil : frame.ocr.observations,
+                selected: frame.selected,
+                reason: frame.selected ? "visual-change-pixel-diff" : "pixel-dedupe"
+            ))
+        }
+
+        try JSONEncoder.synEncoder.encode(metadata).write(to: context.candidateMetadataURL)
+        return FrameExtractionResult(
+            candidateFrames: metadata,
+            selectedFrames: metadata.filter(\.selected),
+            duration: duration
+        )
+    }
+
+    /// The live overlay segments are working files only — once recording.mp4 exists (via the
+    /// fast remux or the offline fallback) they have no further use and are removed so they
+    /// never leak into raw recovery merges or zips.
+    private func cleanUpLiveRenderSegments(context: PacketContext) {
+        let liveDirectory = context.rawSegmentsURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("live-render", isDirectory: true)
+        try? FileManager.default.removeItem(at: liveDirectory)
     }
 
     /// Transcript branch: transcribe the raw recording's audio with local Whisper. Needs only
     /// the audio track (available immediately after capture), so it runs concurrently with the
     /// video render instead of waiting for it.
     private func transcribeFromRaw(
-        context: PacketContext
+        context: PacketContext,
+        streamingTranscript: Task<StreamingTranscriptResult?, Never>? = nil
     ) async -> (result: TranscriptResult, notes: [String], timings: [ProcessingStageTiming]) {
         var notes: [String] = []
         var timings: [ProcessingStageTiming] = []
+
+        // Streamed transcription (chunks transcribed while the user was still recording)
+        // replaces the full offline pass when it produced real text; awaiting it here only
+        // costs the final partial chunk, which overlaps the video branch. An empty or
+        // failed stream falls through to the offline transcription below.
+        if let streamingTranscript {
+            let streamedStart = Date()
+            if let streamed = await streamingTranscript.value, streamed.isUsable {
+                let markdown = "# Transcript\n\n" + streamed.text + "\n"
+                try? markdown.write(to: context.transcriptURL, atomically: true, encoding: .utf8)
+                timings.append(processingTiming("transcribe-streamed-tail", startedAt: streamedStart))
+                SynPerf.log("streamed transcript finalize (\(streamed.chunkCount) chunks)", seconds: Date().timeIntervalSince(streamedStart))
+                return (
+                    TranscriptResult(
+                        markdown: markdown,
+                        provider: streamed.provider,
+                        model: streamed.model,
+                        notes: streamed.notes
+                    ),
+                    notes,
+                    timings
+                )
+            }
+            notes.append("Streamed transcription was unavailable or empty; ran the full offline transcription instead.")
+        }
 
         let transcriptResult: TranscriptResult
         let transcriptionStart = Date()
@@ -1011,6 +1308,10 @@ final class PacketProcessor {
 
         \(pauseSummary)
 
+        ## Flagged Elements
+
+        \(flaggedElementReferences(context: context))
+
         ## Selected Frame References
 
         \(frameReferences)
@@ -1023,6 +1324,22 @@ final class PacketProcessor {
 
         \(projectContextExcerpt)
         """
+    }
+
+    private func flaggedElementReferences(context: PacketContext) -> String {
+        let url = context.folderURL.appendingPathComponent("elements/flagged-elements.json")
+        guard let data = try? Data(contentsOf: url),
+              let elements = try? JSONDecoder.synDecoder.decode([FlaggedElementSnapshot].self, from: data),
+              !elements.isEmpty else {
+            return "- No UI elements were flagged in this recording."
+        }
+        return elements.map { element in
+            let name = element.label ?? element.value ?? element.identifier ?? "element"
+            let role = element.role ?? "unknown-role"
+            let app = [element.appName, element.windowTitle].compactMap { $0 }.joined(separator: " — ")
+            let video = element.videoBounds.map { "video=(\(Int($0.x)),\(Int($0.y)) \(Int($0.width))x\(Int($0.height)))" } ?? "video=unmapped"
+            return "- \(DurationFormatter.string(from: element.timestamp)): [\(element.index)] \(role) \"\(name)\" in \(app.isEmpty ? "unknown app" : app); \(video); provider: \(element.provider). A highlight is burned into recording.mp4 at this timestamp. Full metadata: elements/flagged-elements.json"
+        }.joined(separator: "\n")
     }
 
     private func selectedFrameReferences(context: PacketContext) -> String {

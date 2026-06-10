@@ -87,16 +87,16 @@ final class FrameExtractor {
         for time in times {
             let image = try generator.copyCGImage(at: time, actualTime: nil)
             let timestamp = time.seconds
-            let hash = perceptualHash(for: image)
-            let pixelSample = grayscaleSample(for: image, width: 64, height: 36)
-            let diff = previousPixelSample.map { normalizedMeanAbsoluteDifference($0, pixelSample) }
+            let hash = Self.perceptualHash(for: image)
+            let pixelSample = Self.grayscaleSample(for: image, width: 64, height: 36)
+            let diff = previousPixelSample.map { Self.normalizedMeanAbsoluteDifference($0, pixelSample) }
             let selected = diff == nil || (diff ?? 0) > 0.006
             // OCR is the most expensive per-frame step; only run it on frames we keep
             // (near-duplicate frames that get deduped out never reach the packet).
             let ocr = selected
                 ? Self.recognizeText(in: image)
                 : FrameOCRRecognitionResult(text: nil, meanConfidence: nil, observations: [])
-            let filename = timestampFilename(timestamp)
+            let filename = Self.timestampFilename(timestamp)
 
             var fullPath: String?
             var compressedPath: String?
@@ -112,22 +112,22 @@ final class FrameExtractor {
                 let candidateURL = context.candidateMetadataURL
                     .deletingLastPathComponent()
                     .appendingPathComponent("\(filename).jpg")
-                candidateSize = try writeCompressedJPEG(image, to: candidateURL)
-                candidatePath = relativePath(candidateURL, base: context.folderURL)
-                candidateBytes = fileSize(candidateURL)
+                candidateSize = try Self.writeCompressedJPEG(image, to: candidateURL)
+                candidatePath = Self.relativePath(candidateURL, base: context.folderURL)
+                candidateBytes = Self.fileSize(candidateURL)
             }
 
             if selected {
                 let fullURL = context.fullFramesURL.appendingPathComponent("\(filename).png")
                 let compressedURL = context.compressedFramesURL.appendingPathComponent("\(filename).jpg")
-                try writePNG(image, to: fullURL)
-                let compressedImageSize = try writeCompressedJPEG(image, to: compressedURL)
-                fullPath = relativePath(fullURL, base: context.folderURL)
-                compressedPath = relativePath(compressedURL, base: context.folderURL)
+                try Self.writePNG(image, to: fullURL)
+                let compressedImageSize = try Self.writeCompressedJPEG(image, to: compressedURL)
+                fullPath = Self.relativePath(fullURL, base: context.folderURL)
+                compressedPath = Self.relativePath(compressedURL, base: context.folderURL)
                 fullSize = CodableSize(width: Double(image.width), height: Double(image.height))
                 compressedSize = compressedImageSize
-                fullBytes = fileSize(fullURL)
-                compressedBytes = fileSize(compressedURL)
+                fullBytes = Self.fileSize(fullURL)
+                compressedBytes = Self.fileSize(compressedURL)
             }
 
             let frameContext = frameContext(at: timestamp, capture: capture, activeWindowSamples: activeWindowSamples)
@@ -189,7 +189,7 @@ final class FrameExtractor {
         )
     }
 
-    private func timestampFilename(_ timestamp: TimeInterval) -> String {
+    static func timestampFilename(_ timestamp: TimeInterval) -> String {
         let totalMilliseconds = Int((timestamp * 1000).rounded())
         let hours = totalMilliseconds / 3_600_000
         let minutes = (totalMilliseconds % 3_600_000) / 60_000
@@ -198,7 +198,7 @@ final class FrameExtractor {
         return String(format: "%02d-%02d-%02d.%03d", hours, minutes, seconds, milliseconds)
     }
 
-    private func relativePath(_ url: URL, base: URL) -> String {
+    static func relativePath(_ url: URL, base: URL) -> String {
         let path = url.path
         let basePath = base.path + "/"
         if path.hasPrefix(basePath) {
@@ -207,7 +207,7 @@ final class FrameExtractor {
         return path
     }
 
-    private func writePNG(_ image: CGImage, to url: URL) throws {
+    static func writePNG(_ image: CGImage, to url: URL) throws {
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
             throw FrameExtractorError.couldNotCreateDestination
         }
@@ -217,7 +217,7 @@ final class FrameExtractor {
         }
     }
 
-    private func writeCompressedJPEG(_ image: CGImage, to url: URL) throws -> CodableSize {
+    static func writeCompressedJPEG(_ image: CGImage, to url: URL) throws -> CodableSize {
         let maxDimension: CGFloat = 1600
         let originalSize = CGSize(width: image.width, height: image.height)
         let scale = min(1, maxDimension / max(originalSize.width, originalSize.height))
@@ -239,14 +239,14 @@ final class FrameExtractor {
         return CodableSize(width: Double(targetSize.width), height: Double(targetSize.height))
     }
 
-    private func fileSize(_ url: URL) -> Int? {
+    static func fileSize(_ url: URL) -> Int? {
         guard let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber else {
             return nil
         }
         return size.intValue
     }
 
-    private func perceptualHash(for image: CGImage) -> UInt64 {
+    static func perceptualHash(for image: CGImage) -> UInt64 {
         let size = 8
         let width = size
         let height = size
@@ -272,7 +272,7 @@ final class FrameExtractor {
         }
     }
 
-    private func grayscaleSample(for image: CGImage, width: Int, height: Int) -> [UInt8] {
+    static func grayscaleSample(for image: CGImage, width: Int, height: Int) -> [UInt8] {
         var pixels = [UInt8](repeating: 0, count: width * height)
         let colorSpace = CGColorSpaceCreateDeviceGray()
         guard let context = CGContext(
@@ -291,7 +291,7 @@ final class FrameExtractor {
         return pixels
     }
 
-    private func normalizedMeanAbsoluteDifference(_ lhs: [UInt8], _ rhs: [UInt8]) -> Double {
+    static func normalizedMeanAbsoluteDifference(_ lhs: [UInt8], _ rhs: [UInt8]) -> Double {
         let count = min(lhs.count, rhs.count)
         guard count > 0 else {
             return 0
@@ -303,5 +303,221 @@ final class FrameExtractor {
         }
 
         return Double(total) / Double(count * 255)
+    }
+}
+
+// MARK: - Live frame sampling (during recording)
+
+/// Everything the offline extractor would have produced, computed during capture.
+struct LiveFrameSamplingArtifact {
+    /// Candidate metadata with frame files already written into `stagingDirectory`
+    /// (relative paths are staged names, rewritten when the files move into frames/).
+    var frames: [LiveSampledFrame]
+    var stagingDirectory: URL
+    var usable: Bool
+}
+
+struct LiveSampledFrame {
+    var timestamp: TimeInterval
+    var perceptualHash: UInt64
+    var pixelDifferenceFromPrevious: Double?
+    var selected: Bool
+    var ocr: FrameOCRRecognitionResult
+    /// Staged file names (inside the staging directory) for selected frames.
+    var fullFileName: String?
+    var compressedFileName: String?
+    var fullSize: CodableSize?
+    var compressedSize: CodableSize?
+}
+
+/// Samples one frame every ~3 s straight from the live ScreenCaptureKit stream, doing the
+/// offline extractor's work (perceptual hash, visual-change gate, OCR, PNG/JPEG encode)
+/// while the recording runs. Stop-time "extraction" becomes a file move + metadata write.
+final class LiveFrameSampler: @unchecked Sendable {
+    private static let sampleInterval: TimeInterval = 3.0
+
+    private let stagingDirectory: URL
+    private let workQueue = DispatchQueue(label: "syn.live-frame-sampler", qos: .utility)
+    private let jobs = DispatchGroup()
+    private let lock = NSLock()
+
+    private var frames: [LiveSampledFrame] = []
+    private var previousPixelSample: [UInt8]?
+    private var accumulatedSeconds: TimeInterval = 0
+    private var segmentStartPTS: TimeInterval?
+    private var lastIngestPTS: TimeInterval?
+    private var lastSampleVideoTime: TimeInterval = -.greatestFiniteMagnitude
+    private var failed = false
+    private var active = true
+
+    init(stagingDirectory: URL) {
+        self.stagingDirectory = stagingDirectory
+        try? FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+    }
+
+    /// Called by the recorder when a capture segment ends (pause or stop) so the next
+    /// segment's timestamps continue the collapsed video timeline.
+    func endSegment() {
+        lock.lock()
+        if let segmentStartPTS, let lastIngestPTS {
+            accumulatedSeconds += max(0, lastIngestPTS - segmentStartPTS)
+        }
+        segmentStartPTS = nil
+        lastIngestPTS = nil
+        lock.unlock()
+    }
+
+    /// Called from the live stream callback for every complete frame.
+    func ingest(pixelBuffer: CVPixelBuffer, ptsSeconds: TimeInterval) {
+        lock.lock()
+        guard active, !failed else {
+            lock.unlock()
+            return
+        }
+        if segmentStartPTS == nil {
+            segmentStartPTS = ptsSeconds
+        }
+        lastIngestPTS = ptsSeconds
+        let videoTime = accumulatedSeconds + (ptsSeconds - (segmentStartPTS ?? ptsSeconds))
+        guard videoTime - lastSampleVideoTime >= Self.sampleInterval - 0.05 else {
+            lock.unlock()
+            return
+        }
+        lastSampleVideoTime = videoTime
+        lock.unlock()
+
+        guard let image = Self.makeCGImage(from: pixelBuffer) else {
+            return
+        }
+
+        jobs.enter()
+        workQueue.async { [weak self] in
+            defer { self?.jobs.leave() }
+            self?.process(image: image, videoTime: videoTime)
+        }
+    }
+
+    private func process(image: CGImage, videoTime: TimeInterval) {
+        let hash = FrameExtractor.perceptualHash(for: image)
+        let pixelSample = FrameExtractor.grayscaleSample(for: image, width: 64, height: 36)
+
+        lock.lock()
+        let diff = previousPixelSample.map { FrameExtractor.normalizedMeanAbsoluteDifference($0, pixelSample) }
+        let selected = diff == nil || (diff ?? 0) > 0.006
+        if selected {
+            previousPixelSample = pixelSample
+        }
+        lock.unlock()
+
+        var ocr = FrameOCRRecognitionResult(text: nil, meanConfidence: nil, observations: [])
+        var fullFileName: String?
+        var compressedFileName: String?
+        var fullSize: CodableSize?
+        var compressedSize: CodableSize?
+
+        if selected {
+            ocr = FrameExtractor.recognizeText(in: image)
+            let base = FrameExtractor.timestampFilename(videoTime)
+            do {
+                let fullURL = stagingDirectory.appendingPathComponent("\(base).png")
+                let compressedURL = stagingDirectory.appendingPathComponent("\(base).jpg")
+                try FrameExtractor.writePNG(image, to: fullURL)
+                compressedSize = try FrameExtractor.writeCompressedJPEG(image, to: compressedURL)
+                fullFileName = "\(base).png"
+                compressedFileName = "\(base).jpg"
+                fullSize = CodableSize(width: Double(image.width), height: Double(image.height))
+            } catch {
+                lock.lock()
+                failed = true
+                lock.unlock()
+                return
+            }
+        }
+
+        let frame = LiveSampledFrame(
+            timestamp: videoTime,
+            perceptualHash: hash,
+            pixelDifferenceFromPrevious: diff,
+            selected: selected,
+            ocr: ocr,
+            fullFileName: fullFileName,
+            compressedFileName: compressedFileName,
+            fullSize: fullSize,
+            compressedSize: compressedSize
+        )
+        lock.lock()
+        frames.append(frame)
+        lock.unlock()
+    }
+
+    /// Waits for in-flight sample processing and returns the artifact.
+    func finish() async -> LiveFrameSamplingArtifact {
+        lock.lock()
+        active = false
+        lock.unlock()
+        endSegment()
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            jobs.notify(queue: workQueue) {
+                continuation.resume()
+            }
+        }
+
+        lock.lock()
+        let sorted = frames.sorted { $0.timestamp < $1.timestamp }
+        let ok = !failed && !sorted.isEmpty
+        lock.unlock()
+        return LiveFrameSamplingArtifact(frames: sorted, stagingDirectory: stagingDirectory, usable: ok)
+    }
+
+    func cancel() {
+        lock.lock()
+        active = false
+        failed = true
+        lock.unlock()
+        let directory = stagingDirectory
+        workQueue.async {
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    /// BGRA CVPixelBuffer → CGImage with a private copy of the pixels (the source buffer
+    /// goes back to ScreenCaptureKit's pool immediately).
+    private static func makeCGImage(from pixelBuffer: CVPixelBuffer) -> CGImage? {
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else {
+            return nil
+        }
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            return nil
+        }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else {
+            return nil
+        }
+        let destinationBytesPerRow = context.bytesPerRow
+        guard let destination = context.data else {
+            return nil
+        }
+        let rowBytes = min(bytesPerRow, destinationBytesPerRow)
+        for row in 0..<height {
+            memcpy(
+                destination + row * destinationBytesPerRow,
+                base + row * bytesPerRow,
+                rowBytes
+            )
+        }
+        return context.makeImage()
     }
 }

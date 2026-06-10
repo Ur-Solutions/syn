@@ -61,6 +61,16 @@ final class FramePlanningService {
         }
     }
 
+    /// Instant local selection used to reveal the packet before the semantic
+    /// plan finishes in the background: keep the visual-change frames the
+    /// extractor already picked, capped at the packet frame budget.
+    func heuristicPlan(extraction: FrameExtractionResult) -> FramePlanningResult {
+        fallbackPlan(
+            extraction: extraction,
+            note: "Visual-change selection used for instant reveal; semantic frame refinement runs in the background."
+        )
+    }
+
     private func fallbackPlan(extraction: FrameExtractionResult, note: String) -> FramePlanningResult {
         let selected = Array(extraction.selectedFrames.prefix(maxFrames))
         let selectedTimestamps = Set(selected.map { timestampKey($0.timestamp) })
