@@ -29,8 +29,12 @@ export function synWebElements(options: SynVitePluginOptions = {}): Plugin {
     framework: "react",
     clientEntryPatterns: [
       /(?:^|\/)(?:app|src)\/client\.[tj]sx?(?:\?|$)/,
+      // Start's bundled default entry (used when the app has no src/client.tsx).
+      // The virtual wrapper module is served outside the transform pipeline, so
+      // the injection targets the real entry file it imports.
+      /react-start\/dist\/plugin\/default-entry\/client\.[tj]sx?(?:\?|$)/,
       /default-client-entry/,
-      /tanstack-start-client-entry/,
+      /tanstack-start(?:-[a-z]+)*-client-entry/,
     ],
     resolveRouteExpression: RESOLVE_ROUTE,
   })

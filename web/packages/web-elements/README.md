@@ -124,6 +124,17 @@ Snapshots carry bounds twice — raw viewport CSS px and normalized screen point
 pnpm install
 pnpm build        # tsup → dist/
 pnpm test         # vitest (jsdom)
-pnpm --filter syn-fixture-vite-react dev   # acceptance fixture on :5173
-pnpm --filter syn-fixture-svelte dev       # svelte fixture on :5174
 ```
+
+One fixture app per adapter, each with the same flaggable billing page
+(`data-testid="upgrade-plan-button"`, nested span, PlanCard owner stack). From `web/`:
+
+```sh
+pnpm fixtures                  # all four in parallel
+pnpm fixture:vite-react        # http://localhost:5173
+pnpm fixture:svelte            # http://localhost:5174
+pnpm fixture:next              # http://localhost:3030
+pnpm fixture:tanstack-start    # http://localhost:3031
+```
+
+Open one in Chrome, start a Syn recording, `Right Shift + E`, hover the button.

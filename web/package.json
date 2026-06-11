@@ -5,6 +5,9 @@
     "build": "pnpm --filter @syn/web-elements build",
     "test": "pnpm --filter @syn/web-elements test",
     "fixture:vite-react": "pnpm --filter syn-fixture-vite-react dev",
-    "fixture:svelte": "pnpm --filter syn-fixture-svelte dev"
+    "fixture:svelte": "pnpm --filter syn-fixture-svelte dev",
+    "fixture:next": "pnpm --filter syn-fixture-next dev",
+    "fixture:tanstack-start": "pnpm --filter syn-fixture-tanstack-start dev",
+    "fixtures": "pnpm --parallel --filter \"syn-fixture-*\" dev"
   }
 }

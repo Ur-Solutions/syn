@@ -110,5 +110,13 @@ Remaining for full PRD acceptance (needs interactive session):
   source and the burned-in highlight. (Headless-Chrome e2e was attempted but Chrome
   headless does not navigate on this machine — environmental, not a code path.)
 - 125% zoom + Retina spot check of the coordinate mapping against a real window.
-- Next/TanStack Start fixtures (adapters are built; fixtures were deliberately
-  skipped to keep the workspace lean).
+Added later the same day: fixtures for ALL four adapters (`pnpm fixtures` in `web/`
+runs them in parallel — vite-react :5173, svelte :5174, next :3030, tanstack-start
+:3031; 3000/3001 were taken on this machine). Verified by booting each dev server:
+Next bundles the SDK via instrumentation-client (markers present in main-app.js);
+TanStack Start injects into its bundled default client entry
+(`react-start/dist/plugin/default-entry/client.tsx` — the virtual wrapper module
+bypasses the transform pipeline, so the adapter matches the real file; current Start
+also wants `getRouter` exported from src/router.tsx, not `createRouter`); svelte and
+vite-react inject via transformIndexHtml. Adapter entry-pattern regression tests in
+`test/adapters.test.ts`.
