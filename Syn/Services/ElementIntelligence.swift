@@ -46,6 +46,8 @@ final class ElementPickerController {
     private var mouseMonitors: [Any] = []
     private var lastLookupAt = Date.distantPast
     private var hover: (bounds: CGRect, title: String)?
+    /// The full snapshot behind the current highlight; clicks flag exactly this.
+    private var hoverSnapshot: FlaggedElementSnapshot?
     /// Discards bridge answers that arrive after the cursor has moved on.
     private var hoverGeneration = 0
 
@@ -72,6 +74,7 @@ final class ElementPickerController {
         } else {
             removeMonitors()
             hover = nil
+            hoverSnapshot = nil
             windows.forEach { $0.orderOut(nil) }
             windows = []
         }
@@ -117,8 +120,11 @@ final class ElementPickerController {
     }
 
     /// AX lookup with a small debounce; bounds returned in global Cocoa coordinates.
-    /// Over a browser window with a connected `@syn/web-elements` page, the AX result
-    /// shows immediately and is replaced when the bridge answers (typically <20ms).
+    /// Over a connected `@syn/web-elements` page the bridge answer is authoritative;
+    /// the previous hover stays on screen until it lands (a few ms locally). Drawing
+    /// the AX rect first and replacing it alternates two rects on every mouse move,
+    /// and Chrome's lazily built AX tree intermittently returns nil — both read as
+    /// flicker.
     private func refreshHover(at cocoaPoint: CGPoint) {
         guard isActive, Date().timeIntervalSince(lastLookupAt) > 0.05 else { return }
         lastLookupAt = Date()
@@ -126,34 +132,49 @@ final class ElementPickerController {
         let generation = hoverGeneration
 
         let ax = Self.accessibilitySnapshot(atCocoaPoint: cocoaPoint)
-        apply(hoverSnapshot: ax)
-        guard Self.shouldConsultBridge(for: ax) else { return }
+        guard Self.shouldConsultBridge(for: ax) else {
+            apply(hoverSnapshot: ax, at: cocoaPoint)
+            return
+        }
         Task { [weak self] in
-            guard let merged = await WebElementBridge.shared.snapshot(atCocoaPoint: cocoaPoint, merging: ax),
-                  let self, self.isActive, self.hoverGeneration == generation else { return }
-            self.apply(hoverSnapshot: merged)
+            let merged = await WebElementBridge.shared.snapshot(atCocoaPoint: cocoaPoint, merging: ax)
+            guard let self, self.isActive, self.hoverGeneration == generation else { return }
+            self.apply(hoverSnapshot: merged ?? ax, at: cocoaPoint)
         }
     }
 
-    private func apply(hoverSnapshot snapshot: FlaggedElementSnapshot?) {
+    private func apply(hoverSnapshot snapshot: FlaggedElementSnapshot?, at point: CGPoint) {
         guard let snapshot else {
-            hover = nil
-            redraw()
+            // Nil is usually the hit-test landing on our own highlight (excluded as a
+            // self-hit) or a transient AX failure, not an empty spot. Keep the current
+            // highlight while the cursor is still inside it; clear once it leaves.
+            if let hover, !hover.bounds.contains(point) {
+                self.hover = nil
+                self.hoverSnapshot = nil
+                redraw()
+            }
             return
         }
+        hoverSnapshot = snapshot
         var title = [snapshot.role, snapshot.label ?? snapshot.value]
             .compactMap { $0 }
             .joined(separator: " — ")
         if let component = snapshot.framework?.componentName {
             title += " · <\(component)>"
         }
-        hover = (snapshot.screenBounds.rect, title)
+        let bounds = snapshot.screenBounds.rect
+        if let hover, hover.bounds == bounds, hover.title == title { return }
+        hover = (bounds, title)
         redraw()
     }
 
+    /// Consult connected pages when the cursor is over a browser window — or when AX
+    /// has no answer at all (Chrome's AX hit-test fails intermittently; pages verify
+    /// the point against their own viewport, so a stray non-browser match is unlikely).
     private static func shouldConsultBridge(for ax: FlaggedElementSnapshot?) -> Bool {
-        guard let bundleID = ax?.appBundleID, browserBundleIDs.contains(bundleID) else { return false }
-        return WebElementBridge.shared.hasClients
+        guard WebElementBridge.shared.hasClients else { return false }
+        guard let bundleID = ax?.appBundleID else { return true }
+        return browserBundleIDs.contains(bundleID)
     }
 
     fileprivate func handleClick(atCocoaPoint point: CGPoint) {
@@ -162,6 +183,12 @@ final class ElementPickerController {
         if let existing = appState.flaggedElements.last(where: { $0.screenBounds.rect.contains(point) }) {
             appState.removeFlaggedElement(id: existing.id)
             redraw()
+            return
+        }
+        // Flag what the user sees: the snapshot behind the current highlight. A fresh
+        // lookup at click time can self-hit the overlay fill or race the bridge.
+        if let snapshot = hoverSnapshot, snapshot.screenBounds.rect.contains(point) {
+            flag(snapshot: snapshot)
             return
         }
         let ax = Self.accessibilitySnapshot(atCocoaPoint: point)
@@ -175,8 +202,10 @@ final class ElementPickerController {
         }
     }
 
+    /// No isActive guard: the click happened while the picker was active; a flag must
+    /// not be lost because the bridge answered just after Esc/stop deactivated it.
     private func flag(snapshot: FlaggedElementSnapshot?) {
-        guard isActive, var snapshot, let appState else { return }
+        guard var snapshot, let appState else { return }
         snapshot.index = appState.flaggedElements.count + 1
         snapshot.timestamp = appState.activeRecording?.elapsed(at: Date()) ?? 0
         appState.appendFlaggedElement(snapshot)
@@ -206,6 +235,13 @@ final class ElementPickerController {
               let element else {
             return nil
         }
+
+        // The picker overlay draws a translucent fill under the cursor, so the
+        // hit-test regularly lands on Syn's own window. Treating that as a result
+        // flips the highlight between the element and our overlay — feedback flicker.
+        var hitPid: pid_t = 0
+        AXUIElementGetPid(element, &hitPid)
+        guard hitPid != ProcessInfo.processInfo.processIdentifier else { return nil }
 
         func string(_ attribute: String) -> String? {
             var value: CFTypeRef?

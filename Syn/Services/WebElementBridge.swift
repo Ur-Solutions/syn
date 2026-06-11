@@ -215,7 +215,44 @@ final class WebElementBridge: @unchecked Sendable {
         let primaryHeight = Self.primaryScreenHeight()
         let topLeft = CGPoint(x: cocoaPoint.x, y: primaryHeight - cocoaPoint.y)
         guard let payload = await lookup(atTopLeftPoint: topLeft) else { return nil }
-        return Self.flaggedSnapshot(payload: payload, primaryScreenHeight: primaryHeight, merging: ax)
+        var snapshot = Self.flaggedSnapshot(payload: payload, primaryScreenHeight: primaryHeight, merging: ax)
+        // Chrome's AX hit-test fails often, losing app/window context; the window
+        // list still knows whose window is under the point.
+        if snapshot != nil, snapshot?.appBundleID == nil,
+           let owner = Self.windowOwner(atTopLeftPoint: topLeft) {
+            snapshot?.appName = owner.appName
+            snapshot?.appBundleID = owner.bundleID
+            snapshot?.windowTitle = owner.windowTitle
+        }
+        return snapshot
+    }
+
+    /// Frontmost on-screen window (excluding Syn's own overlays) containing the point.
+    private static func windowOwner(
+        atTopLeftPoint point: CGPoint
+    ) -> (appName: String?, bundleID: String?, windowTitle: String?)? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] else { return nil }
+        let ownPid = ProcessInfo.processInfo.processIdentifier
+        for window in windows {
+            guard let pid = window[kCGWindowOwnerPID as String] as? pid_t, pid != ownPid,
+                  (window[kCGWindowLayer as String] as? Int) == 0,
+                  let boundsDict = window[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
+            let bounds = CGRect(
+                x: boundsDict["X"] ?? 0,
+                y: boundsDict["Y"] ?? 0,
+                width: boundsDict["Width"] ?? 0,
+                height: boundsDict["Height"] ?? 0
+            )
+            guard bounds.contains(point) else { continue }
+            let app = NSRunningApplication(processIdentifier: pid)
+            return (
+                appName: (window[kCGWindowOwnerName as String] as? String) ?? app?.localizedName,
+                bundleID: app?.bundleIdentifier,
+                windowTitle: window[kCGWindowName as String] as? String
+            )
+        }
+        return nil
     }
 
     private func lookup(atTopLeftPoint point: CGPoint) async -> WebElementSnapshotPayload? {

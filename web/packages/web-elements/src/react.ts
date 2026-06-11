@@ -36,6 +36,17 @@ const COMPONENT_TAGS = new Set([
 
 const OWNER_STACK_LIMIT = 8
 
+// Framework plumbing that owns DOM rendered by React Server Components: RSCs leave
+// no function fiber on the client, so without filtering, the "nearest component"
+// above their DOM is router internals (observed with Next 15 app router).
+const FRAMEWORK_INTERNAL_NAMES = new Set([
+  "AppRouter", "Router", "OuterLayoutRouter", "InnerLayoutRouter", "SegmentViewNode",
+  "LoadingBoundary", "ErrorBoundary", "ErrorBoundaryHandler", "RedirectBoundary",
+  "RedirectErrorBoundary", "HTTPAccessFallbackBoundary", "HTTPAccessFallbackErrorBoundary",
+  "RenderFromTemplateContext", "ScrollAndFocusHandler", "TemplateContext", "HotReload",
+  "PathnameContextProviderAdapter", "DevRootHTTPAccessFallbackBoundary",
+])
+
 export function findFiber(element: Element): FiberLike | null {
   const record = element as unknown as Record<string, unknown>
   for (const key of Object.keys(record)) {
@@ -84,6 +95,7 @@ function normalizeSourcePath(file: string): string {
 
 function formatDebugSource(source: DebugSource): string | undefined {
   if (!source.fileName) return undefined
+  if (source.fileName.includes("node_modules")) return undefined
   let formatted = normalizeSourcePath(source.fileName)
   if (source.lineNumber !== undefined) {
     formatted += `:${source.lineNumber}`
@@ -136,9 +148,10 @@ export function resolveReact(element: Element, config: ResolvedConfig): Framewor
     if (node.tag === undefined || !COMPONENT_TAGS.has(node.tag)) continue
     const name = componentName(node.type)
     if (!name) continue
+    if (!source) source = fiberSource(node)
+    if (FRAMEWORK_INTERNAL_NAMES.has(name)) continue
     if (!componentFiber) componentFiber = node
     ownerStack.push(name)
-    if (!source) source = fiberSource(node)
   }
 
   const block: FrameworkBlock = { name: "react" }
@@ -146,6 +159,11 @@ export function resolveReact(element: Element, config: ResolvedConfig): Framewor
     block.componentName = ownerStack[0]
     // Outermost-first, matching the PRD example ["BillingPage","PlanCard","UpgradePlanButton"].
     block.ownerStack = [...ownerStack].reverse()
+  } else if (source) {
+    // Server component: no client fiber exists, but the JSX callsite names the file.
+    const file = source.slice(0, source.indexOf(":") === -1 ? source.length : source.indexOf(":"))
+    const base = file.split("/").pop()?.replace(/\.[tj]sx?$/, "")
+    if (base && /^[A-Z]/.test(base)) block.componentName = base
   }
   if (source) block.source = source
 

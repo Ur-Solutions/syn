@@ -90,6 +90,34 @@ describe("resolveReact", () => {
     })
   })
 
+  it("filters framework internals and names server components from their source", () => {
+    // RSC-rendered DOM: the only function fibers above it are Next router internals
+    // (observed with Next 15 app router); the host's _debugStack still names the file.
+    function SegmentViewNode() {}
+    function InnerLayoutRouter() {}
+    function LoadingBoundary() {}
+    const internals: FakeFiber = {
+      tag: 0,
+      type: SegmentViewNode,
+      memoizedProps: { pagePath: "page.tsx", type: "page" },
+      return: { tag: 0, type: InnerLayoutRouter, return: { tag: 0, type: LoadingBoundary, return: null } },
+    }
+    const element = document.createElement("section")
+    attach(element, {
+      tag: 5,
+      type: "section",
+      return: internals,
+      _debugStack: {
+        stack: "    at PlanCard (http://localhost:3030/app/components/PlanCard.tsx:11:87)",
+      },
+    })
+    const block = resolveReact(element, propsConfig)!
+    expect(block.componentName).toBe("PlanCard")
+    expect(block.ownerStack).toBeUndefined()
+    expect(block.source).toBe("/app/components/PlanCard.tsx:11:87")
+    expect(block.props).toBeUndefined()
+  })
+
   it("resolves forwardRef and memo wrappers", () => {
     const element = document.createElement("input")
     const render = function FancyInput() {}

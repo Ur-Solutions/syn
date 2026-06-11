@@ -1336,7 +1336,10 @@ final class PacketProcessor {
         return elements.map { element in
             let name = element.label ?? element.value ?? element.identifier ?? "element"
             let role = element.role ?? "unknown-role"
-            let app = [element.appName, element.windowTitle].compactMap { $0 }.joined(separator: " — ")
+            var app = [element.appName, element.windowTitle].compactMap { $0 }.joined(separator: " — ")
+            if app.isEmpty, let pageTitle = element.web?.title ?? element.web?.url {
+                app = pageTitle
+            }
             let video = element.videoBounds.map { "video=(\(Int($0.x)),\(Int($0.y)) \(Int($0.width))x\(Int($0.height)))" } ?? "video=unmapped"
             var details = [
                 "\(DurationFormatter.string(from: element.timestamp)): [\(element.index)] \(role) \"\(name)\" in \(app.isEmpty ? "unknown app" : app)",
