@@ -1338,7 +1338,18 @@ final class PacketProcessor {
             let role = element.role ?? "unknown-role"
             let app = [element.appName, element.windowTitle].compactMap { $0 }.joined(separator: " — ")
             let video = element.videoBounds.map { "video=(\(Int($0.x)),\(Int($0.y)) \(Int($0.width))x\(Int($0.height)))" } ?? "video=unmapped"
-            return "- \(DurationFormatter.string(from: element.timestamp)): [\(element.index)] \(role) \"\(name)\" in \(app.isEmpty ? "unknown app" : app); \(video); provider: \(element.provider). A highlight is burned into recording.mp4 at this timestamp. Full metadata: elements/flagged-elements.json"
+            var details = [
+                "\(DurationFormatter.string(from: element.timestamp)): [\(element.index)] \(role) \"\(name)\" in \(app.isEmpty ? "unknown app" : app)",
+                video,
+                "provider: \(element.provider)"
+            ]
+            // Web/framework identity (browser.* providers) is the fastest path for an
+            // agent to locate the code; surface it inline instead of only in the JSON.
+            if let selector = element.web?.selector { details.append("DOM: \(selector)") }
+            if let component = element.framework?.componentName { details.append("component: <\(component)>") }
+            if let source = element.framework?.source { details.append("source: \(source)") }
+            if let route = element.web?.route ?? element.web?.url { details.append("route: \(route)") }
+            return "- \(details.joined(separator: "; ")). A highlight is burned into recording.mp4 at this timestamp. Full metadata: elements/flagged-elements.json"
         }.joined(separator: "\n")
     }
 

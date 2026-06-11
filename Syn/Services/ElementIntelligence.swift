@@ -27,6 +27,12 @@ struct FlaggedElementSnapshot: Codable, Sendable, Identifiable {
     var screenBounds: CodableRect
     /// Final-video pixel coordinates (top-left origin); filled during processing.
     var videoBounds: CodableRect?
+    /// DOM-level identity when a `browser.*` provider supplied the snapshot.
+    var web: WebElementBlock? = nil
+    /// Component identity from a dev-mode framework resolver (React/Svelte).
+    var framework: FrameworkElementBlock? = nil
+    /// Lower-priority provider snapshots preserved through a merge (e.g. AX under browser).
+    var rawProviders: [RawProviderSnapshot]? = nil
 }
 
 /// Hover lookup + flagging overlay driven by the macOS Accessibility tree.
@@ -40,6 +46,17 @@ final class ElementPickerController {
     private var mouseMonitors: [Any] = []
     private var lastLookupAt = Date.distantPast
     private var hover: (bounds: CGRect, title: String)?
+    /// Discards bridge answers that arrive after the cursor has moved on.
+    private var hoverGeneration = 0
+
+    /// Windows owned by these apps get a web-element bridge lookup before AX wins.
+    static let browserBundleIDs: Set<String> = [
+        "com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.canary",
+        "org.chromium.Chromium", "company.thebrowser.Browser", "company.thebrowser.dia",
+        "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi",
+        "com.apple.Safari", "com.apple.SafariTechnologyPreview", "org.mozilla.firefox",
+        "app.zen-browser.zen"
+    ]
 
     private init() {}
 
@@ -100,20 +117,43 @@ final class ElementPickerController {
     }
 
     /// AX lookup with a small debounce; bounds returned in global Cocoa coordinates.
+    /// Over a browser window with a connected `@syn/web-elements` page, the AX result
+    /// shows immediately and is replaced when the bridge answers (typically <20ms).
     private func refreshHover(at cocoaPoint: CGPoint) {
         guard isActive, Date().timeIntervalSince(lastLookupAt) > 0.05 else { return }
         lastLookupAt = Date()
+        hoverGeneration += 1
+        let generation = hoverGeneration
 
-        guard let snapshot = Self.accessibilitySnapshot(atCocoaPoint: cocoaPoint) else {
+        let ax = Self.accessibilitySnapshot(atCocoaPoint: cocoaPoint)
+        apply(hoverSnapshot: ax)
+        guard Self.shouldConsultBridge(for: ax) else { return }
+        Task { [weak self] in
+            guard let merged = await WebElementBridge.shared.snapshot(atCocoaPoint: cocoaPoint, merging: ax),
+                  let self, self.isActive, self.hoverGeneration == generation else { return }
+            self.apply(hoverSnapshot: merged)
+        }
+    }
+
+    private func apply(hoverSnapshot snapshot: FlaggedElementSnapshot?) {
+        guard let snapshot else {
             hover = nil
             redraw()
             return
         }
-        let title = [snapshot.role, snapshot.label ?? snapshot.value]
+        var title = [snapshot.role, snapshot.label ?? snapshot.value]
             .compactMap { $0 }
             .joined(separator: " — ")
+        if let component = snapshot.framework?.componentName {
+            title += " · <\(component)>"
+        }
         hover = (snapshot.screenBounds.rect, title)
         redraw()
+    }
+
+    private static func shouldConsultBridge(for ax: FlaggedElementSnapshot?) -> Bool {
+        guard let bundleID = ax?.appBundleID, browserBundleIDs.contains(bundleID) else { return false }
+        return WebElementBridge.shared.hasClients
     }
 
     fileprivate func handleClick(atCocoaPoint point: CGPoint) {
@@ -124,7 +164,19 @@ final class ElementPickerController {
             redraw()
             return
         }
-        guard var snapshot = Self.accessibilitySnapshot(atCocoaPoint: point) else { return }
+        let ax = Self.accessibilitySnapshot(atCocoaPoint: point)
+        if Self.shouldConsultBridge(for: ax) {
+            Task { [weak self] in
+                let merged = await WebElementBridge.shared.snapshot(atCocoaPoint: point, merging: ax)
+                self?.flag(snapshot: merged ?? ax)
+            }
+        } else {
+            flag(snapshot: ax)
+        }
+    }
+
+    private func flag(snapshot: FlaggedElementSnapshot?) {
+        guard isActive, var snapshot, let appState else { return }
         snapshot.index = appState.flaggedElements.count + 1
         snapshot.timestamp = appState.activeRecording?.elapsed(at: Date()) ?? 0
         appState.appendFlaggedElement(snapshot)

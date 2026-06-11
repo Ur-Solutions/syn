@@ -1,0 +1,10 @@
+{
+  "name": "syn-web",
+  "private": true,
+  "scripts": {
+    "build": "pnpm --filter @syn/web-elements build",
+    "test": "pnpm --filter @syn/web-elements test",
+    "fixture:vite-react": "pnpm --filter syn-fixture-vite-react dev",
+    "fixture:svelte": "pnpm --filter syn-fixture-svelte dev"
+  }
+}

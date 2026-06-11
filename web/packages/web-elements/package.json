@@ -1,0 +1,68 @@
+{
+  "name": "@syn/web-elements",
+  "version": "0.1.0",
+  "description": "Dev-mode element intelligence bridge between web apps and the Syn recorder",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": [
+    "./dist/auto.js",
+    "./dist/auto.cjs"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./auto": {
+      "types": "./dist/auto.d.ts",
+      "import": "./dist/auto.js",
+      "require": "./dist/auto.cjs"
+    },
+    "./vite-react": {
+      "types": "./dist/adapters/vite-react.d.ts",
+      "import": "./dist/adapters/vite-react.js",
+      "require": "./dist/adapters/vite-react.cjs"
+    },
+    "./next": {
+      "types": "./dist/adapters/next.d.ts",
+      "import": "./dist/adapters/next.js",
+      "require": "./dist/adapters/next.cjs"
+    },
+    "./tanstack-start": {
+      "types": "./dist/adapters/tanstack-start.d.ts",
+      "import": "./dist/adapters/tanstack-start.js",
+      "require": "./dist/adapters/tanstack-start.cjs"
+    },
+    "./svelte": {
+      "types": "./dist/adapters/svelte.d.ts",
+      "import": "./dist/adapters/svelte.js",
+      "require": "./dist/adapters/svelte.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "vite": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "jsdom": "^26.0.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  }
+}

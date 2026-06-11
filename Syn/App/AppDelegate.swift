@@ -13,9 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.setActivationPolicy(.accessory)
         GlobalHotkeyService.shared.start()
+        WebElementBridge.shared.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         GlobalHotkeyService.shared.stop()
+        WebElementBridge.shared.stop()
     }
 }
