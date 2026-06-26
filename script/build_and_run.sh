@@ -3,7 +3,7 @@ set -euo pipefail
 
 MODE="${1:-run}"
 APP_NAME="Syn"
-BUNDLE_ID="com.trmd.syn"
+BUNDLE_ID="com.trmdy.syn"
 PROJECT_PATH="Syn.xcodeproj"
 SCHEME="Syn"
 CONFIGURATION="Debug"

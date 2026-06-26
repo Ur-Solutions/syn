@@ -587,7 +587,7 @@ Example:
     "identifier": "capture.startButton"
   },
   "context": {
-    "appBundleId": "com.trmd.syn",
+    "appBundleId": "com.trmdy.syn",
     "windowTitle": "Overview"
   },
   "actions": ["AXPress"],

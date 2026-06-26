@@ -76,7 +76,7 @@ Expected:
 Expected:
 
 - [ ] Running app path is `/Users/trmd/Applications/Syn.app`.
-- [ ] Bundle ID is `com.trmd.syn`.
+- [ ] Bundle ID is `com.trmdy.syn`.
 - [ ] Screen Recording is `Allowed`.
 - [ ] Microphone is `Allowed`.
 - [ ] Accessibility is `Allowed`.
@@ -92,7 +92,7 @@ Expected:
 Expected:
 
 - [ ] Bundle path is `/Users/trmd/Applications/Syn.app`.
-- [ ] Bundle ID is `com.trmd.syn`.
+- [ ] Bundle ID is `com.trmdy.syn`.
 - [ ] Running process path matches the staged app.
 - [ ] Microphone status is granted/authorized.
 - [ ] Screen Recording status is granted.

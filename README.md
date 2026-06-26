@@ -25,9 +25,23 @@ Optional modes:
 ./script/build_and_run.sh --debug
 ```
 
+## Release
+
+Syn's release bundle id is `com.trmdy.syn`. To build, Developer ID sign, notarize,
+staple, and verify a local arm64 release:
+
+```bash
+./script/release.sh 0.1.0
+```
+
+Artifacts are written to `release/` as a notarized `.dmg`, a stapled `.app` zip,
+and `SHA256SUMS`. See [Releasing](docs/RELEASING.md) for prerequisites and
+credential overrides.
+
 ## Documents
 
 - [Design system](docs/DESIGN_SYSTEM.md)
+- [Releasing](docs/RELEASING.md)
 - [Specification corroboration](docs/SPEC_CORROBORATION.md)
 - [Implementation audit](docs/IMPLEMENTATION_AUDIT.md)
 - [Testing checklist](docs/TESTING_CHECKLIST.md)
@@ -249,4 +263,4 @@ If macOS privacy state gets confused while iterating on debug builds:
 ./script/build_and_run.sh --verify
 ```
 
-`diagnose_permissions.sh` is read-only. It prints the staged bundle path, bundle ID, signing state, running process path, and any readable TCC rows. `reset_permissions.sh` clears Screen Recording, Microphone, and Accessibility grants for `com.trmd.syn`, so only run it when you are ready to regrant permissions.
+`diagnose_permissions.sh` is read-only. It prints the staged bundle path, bundle ID, signing state, running process path, and any readable TCC rows. `reset_permissions.sh` clears Screen Recording, Microphone, and Accessibility grants for `com.trmdy.syn`, so only run it when you are ready to regrant permissions.

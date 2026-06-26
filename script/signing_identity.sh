@@ -20,7 +20,21 @@ find_default_sign_identity() {
 
   find_code_sign_identity_exact "Apple Development: Tormod Haugland (QT5J6P28AM)" \
     || find_code_sign_identity_prefix "Apple Development:" \
-    || find_code_sign_identity_exact "Developer ID Application: Ur Solutions AS (4QK8JBAU4V)" \
-    || find_code_sign_identity_prefix "Developer ID Application:" \
+    || find_developer_id_sign_identity \
     || find_code_sign_identity_exact "Rift Local Signing"
+}
+
+find_developer_id_sign_identity() {
+  if [[ -n "${SYN_DEVELOPER_ID_CERT_SHA1:-}" ]]; then
+    printf '%s\n' "$SYN_DEVELOPER_ID_CERT_SHA1"
+    return
+  fi
+
+  if [[ -n "${SYN_DEVELOPER_ID_CODE_SIGN_IDENTITY:-}" ]]; then
+    printf '%s\n' "$SYN_DEVELOPER_ID_CODE_SIGN_IDENTITY"
+    return
+  fi
+
+  find_code_sign_identity_exact "Developer ID Application: Ur Solutions AS (4QK8JBAU4V)" \
+    || find_code_sign_identity_prefix "Developer ID Application:"
 }

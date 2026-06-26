@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BUNDLE_ID="${1:-com.trmd.syn}"
+BUNDLE_ID="${1:-com.trmdy.syn}"
 
 /usr/bin/tccutil reset Microphone "$BUNDLE_ID"
 

@@ -18,11 +18,11 @@ enum DurationFormatter {
 ///       tail -f ~/Library/Logs/Syn/perf.log
 ///       cat ~/Library/Logs/Syn/perf.log
 ///
-/// 2. os_log under subsystem `com.trmd.syn` / category `perf`, for live streaming:
+/// 2. os_log under subsystem `com.trmdy.syn` / category `perf`, for live streaming:
 ///       ./script/build_and_run.sh --telemetry
-///       log stream --info --predicate 'subsystem == "com.trmd.syn" && category == "perf"'
+///       log stream --info --predicate 'subsystem == "com.trmdy.syn" && category == "perf"'
 enum SynPerf {
-    static let logger = Logger(subsystem: "com.trmd.syn", category: "perf")
+    static let logger = Logger(subsystem: "com.trmdy.syn", category: "perf")
 
     /// `~/Library/Logs/Syn/perf.log` (the app is not sandboxed, so this is writable).
     static let fileURL: URL = {

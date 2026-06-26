@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_NAME="Syn"
-BUNDLE_ID="com.trmd.syn"
+BUNDLE_ID="com.trmdy.syn"
 STAGED_APP_BUNDLE="${STAGED_APP_BUNDLE:-$HOME/Applications/$APP_NAME.app}"
 INFO_PLIST="$STAGED_APP_BUNDLE/Contents/Info.plist"
 APP_BINARY="$STAGED_APP_BUNDLE/Contents/MacOS/$APP_NAME"

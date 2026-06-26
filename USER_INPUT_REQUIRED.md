@@ -114,7 +114,7 @@ Already verified without additional user input:
 - The build script now preserves the staged `/Users/trmd/Applications/Syn.app` bundle directory when updating builds, syncs stale files out of `Contents`, and registers the app with Launch Services. This should make macOS privacy settings track one stable app path instead of a recreated bundle.
 - The Permissions checklist now has a `Relaunch Syn` button when Screen Recording is not granted, because macOS does not let the current process observe a new Screen Recording grant through Refresh alone.
 - The Permissions checklist now has a `Reset Mic` action for a denied/stuck Microphone grant. It resets only Syn's Microphone TCC row, relaunches Syn, and automatically requests Microphone on the next launch.
-- `./script/reset_microphone_permission.sh` resets only Microphone permission for `com.trmd.syn`; it does not reset Screen Recording or Accessibility.
+- `./script/reset_microphone_permission.sh` resets only Microphone permission for `com.trmdy.syn`; it does not reset Screen Recording or Accessibility.
 - `./script/permission_status.sh` prints Syn's own read-only view of Microphone, Screen Recording, and Accessibility status from the staged app bundle, including both `AVAudioApplication.recordPermission` and `AVCaptureDevice.authorizationStatus`.
 - `./script/capture_syn_ui.sh` launches the staged app with the requested main, picker, HUD, or Settings window visible, keeps the display session awake during capture, captures the actual Syn window, falls back to a full-screen crop if macOS refuses direct window capture, and writes the GUI process permission status next to the screenshot. Use this for permission UI verification instead of relying on direct CLI fixtures alone.
 - Serial photograbs after the Settings-affordance change passed on June 3, 2026: `build/ui-captures/syn-main-after-settings-action.png`, `build/ui-captures/syn-picker-after-settings-action.png`, and `build/ui-captures/syn-settings-after-settings-action.png`.
@@ -196,7 +196,7 @@ If it still looks wrong, run the read-only diagnostic script and share the outpu
 The diagnostic should show:
 
 - Expected bundle: `/Users/trmd/Applications/Syn.app`
-- Expected bundle id: `com.trmd.syn`
+- Expected bundle id: `com.trmdy.syn`
 - A running process whose path is `/Users/trmd/Applications/Syn.app/Contents/MacOS/Syn`
 - Authority: `Apple Development: Tormod Haugland (QT5J6P28AM)`
 - TeamIdentifier: `4QK8JBAU4V`

@@ -217,7 +217,7 @@ fi
 
 PERMISSION_STATUS_LOG="$WORK_DIR/permission-status.log"
 "$APP_BINARY" --syn-permission-status-fixture 2>&1 | tee "$PERMISSION_STATUS_LOG"
-if ! grep -q '^SYN_PERMISSION_BUNDLE_ID=com.trmd.syn$' "$PERMISSION_STATUS_LOG"; then
+if ! grep -q '^SYN_PERMISSION_BUNDLE_ID=com.trmdy.syn$' "$PERMISSION_STATUS_LOG"; then
   echo "permission status fixture did not report the Syn bundle id" >&2
   exit 1
 fi
