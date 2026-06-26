@@ -29,7 +29,7 @@ The script:
 3. exports with Developer ID signing,
 4. re-signs embedded Whisper Mach-O assets and the outer app,
 5. notarizes and staples `Syn.app`,
-6. creates, notarizes, and staples a DMG,
+6. creates, signs, notarizes, and staples a DMG,
 7. verifies with `codesign`, `stapler`, and `spctl`.
 
 Outputs are written to `release/`:

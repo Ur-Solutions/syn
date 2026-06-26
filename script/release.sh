@@ -188,6 +188,7 @@ make_dmg() {
   mkdir -p "$dmg_root"
   /usr/bin/ditto "$app_bundle" "$dmg_root/$APP_NAME.app"
   /usr/bin/hdiutil create -volname "$APP_NAME $VERSION" -srcfolder "$dmg_root" -ov -format UDZO "$dmg_path" >/dev/null
+  /usr/bin/codesign --force --timestamp --sign "$SIGN_IDENTITY" "$dmg_path"
 }
 
 notarize() {
