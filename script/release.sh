@@ -267,7 +267,10 @@ echo "verifying Gatekeeper assessment..."
 /usr/sbin/spctl -a -vvv -t install "$APP_BUNDLE"
 /usr/sbin/spctl -a -vvv -t open --context context:primary-signature "$DMG_PATH"
 
-/usr/bin/shasum -a 256 "$DMG_PATH" "$ZIP_PATH" > "$SUMS_PATH"
+(
+  cd "$RELEASE_DIR"
+  /usr/bin/shasum -a 256 "$(basename "$DMG_PATH")" "$(basename "$ZIP_PATH")" > "$(basename "$SUMS_PATH")"
+)
 
 echo "release artifacts:"
 echo "  $DMG_PATH"
