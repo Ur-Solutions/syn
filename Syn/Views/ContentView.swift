@@ -46,6 +46,7 @@ private struct SidebarView: View {
                 eyebrow("Capture")
                 SidebarActionRow(icon: "record.circle", label: "Start Recording") { appState.openCapturePicker() }
                 SidebarActionRow(icon: "repeat", label: "Repeat Last Recording") { appState.repeatLastCapture() }
+                SidebarActionRow(icon: "checklist", label: "Setup") { appState.showSetupWindow() }
                 SidebarActionRow(icon: "gearshape", label: "Settings") { appState.showSettingsWindow() }
 
                 eyebrow("Previous Recordings").padding(.top, 14)

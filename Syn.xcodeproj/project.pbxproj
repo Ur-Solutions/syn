@@ -57,6 +57,8 @@
 		AA0000000000000000000145 /* AnnotationOverlayController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000045 /* AnnotationOverlayController.swift */; };
 		AA0000000000000000000146 /* VideoTrimService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000046 /* VideoTrimService.swift */; };
 		AA0000000000000000000147 /* ProjectContextService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000047 /* ProjectContextService.swift */; };
+		B1C2D3E4F5A60718293A4B5D /* SetupReadinessService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A60718293A4B5C /* SetupReadinessService.swift */; };
+		B1C2D3E4F5A60718293A4B5F /* SetupChecklistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A60718293A4B5E /* SetupChecklistView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -110,6 +112,8 @@
 		AA0000000000000000000045 /* AnnotationOverlayController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationOverlayController.swift; sourceTree = "<group>"; };
 		AA0000000000000000000046 /* VideoTrimService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTrimService.swift; sourceTree = "<group>"; };
 		AA0000000000000000000047 /* ProjectContextService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectContextService.swift; sourceTree = "<group>"; };
+		B1C2D3E4F5A60718293A4B5C /* SetupReadinessService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupReadinessService.swift; sourceTree = "<group>"; };
+		B1C2D3E4F5A60718293A4B5E /* SetupChecklistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupChecklistView.swift; sourceTree = "<group>"; };
 		AA00000000000000000000F1 /* Syn.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Syn.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -211,6 +215,7 @@
 				AA0000000000000000000045 /* AnnotationOverlayController.swift */,
 				AA0000000000000000000046 /* VideoTrimService.swift */,
 				AA0000000000000000000047 /* ProjectContextService.swift */,
+				B1C2D3E4F5A60718293A4B5C /* SetupReadinessService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -224,6 +229,7 @@
 				AA0000000000000000000011 /* PermissionsChecklistView.swift */,
 				AA0000000000000000000012 /* SettingsView.swift */,
 				AA0000000000000000000028 /* RecordingHUDView.swift */,
+				B1C2D3E4F5A60718293A4B5E /* SetupChecklistView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -405,6 +411,8 @@
 				AA0000000000000000000145 /* AnnotationOverlayController.swift in Sources */,
 				AA0000000000000000000146 /* VideoTrimService.swift in Sources */,
 				AA0000000000000000000147 /* ProjectContextService.swift in Sources */,
+				B1C2D3E4F5A60718293A4B5D /* SetupReadinessService.swift in Sources */,
+				B1C2D3E4F5A60718293A4B5F /* SetupChecklistView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -532,7 +540,7 @@
 				CODE_SIGN_ENTITLEMENTS = Syn/Syn.entitlements;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Syn;
@@ -541,7 +549,7 @@
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Syn reads and activates Google Chrome tabs when you choose Chrome Tab capture.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Syn records your microphone narration while creating feedback packets.";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.trmdy.syn;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -556,7 +564,7 @@
 				CODE_SIGN_ENTITLEMENTS = Syn/Syn.entitlements;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Syn;
@@ -565,7 +573,7 @@
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Syn reads and activates Google Chrome tabs when you choose Chrome Tab capture.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Syn records your microphone narration while creating feedback packets.";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.trmdy.syn;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

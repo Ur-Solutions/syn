@@ -97,6 +97,10 @@ struct MenuBarView: View {
             appState.showSettingsWindow()
         }
 
+        Button("Setup") {
+            appState.showSetupWindow()
+        }
+
         Divider()
 
         Button("Quit Syn") {

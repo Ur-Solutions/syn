@@ -31,7 +31,7 @@ Syn's release bundle id is `com.trmdy.syn`. To build, Developer ID sign, notariz
 staple, and verify a local arm64 release:
 
 ```bash
-./script/release.sh 0.1.0
+./script/release.sh 0.2.0
 ```
 
 Artifacts are written to `release/` as a notarized `.dmg`, a stapled `.app` zip,

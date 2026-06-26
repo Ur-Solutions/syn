@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-struct SecretAvailability: Sendable {
+struct SecretAvailability: Equatable, Sendable {
     var isAvailable: Bool
     var source: String
 

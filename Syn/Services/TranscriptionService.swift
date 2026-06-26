@@ -25,6 +25,13 @@ struct TranscriptResult: Sendable {
     var notes: [String]
 }
 
+struct WhisperRuntimeStatus: Equatable {
+    var isReady: Bool
+    var isBundledReady: Bool
+    var detail: String
+    var missing: [String]
+}
+
 final class TranscriptionService {
     func transcribe(videoURL: URL, context: PacketContext) async throws -> TranscriptResult {
         try await extractAudio(from: videoURL, to: context.rawAudioURL)
@@ -164,7 +171,84 @@ final class TranscriptionService {
         )
     }
 
+    static func runtimeStatus() -> WhisperRuntimeStatus {
+        let bundled = bundledWhisperRuntimeStatus()
+        if bundled.isBundledReady {
+            return bundled
+        }
+
+        if let installation = findWhisperInstallation() {
+            return WhisperRuntimeStatus(
+                isReady: true,
+                isBundledReady: false,
+                detail: "\(installation.provider): \(URL(fileURLWithPath: installation.modelPath).lastPathComponent)",
+                missing: bundled.missing
+            )
+        }
+
+        return bundled
+    }
+
+    private static func bundledWhisperRuntimeStatus() -> WhisperRuntimeStatus {
+        guard let resourceURL = Bundle.main.resourceURL else {
+            return WhisperRuntimeStatus(
+                isReady: false,
+                isBundledReady: false,
+                detail: "The app bundle has no readable Resources folder.",
+                missing: ["Resources"]
+            )
+        }
+
+        let whisperURL = resourceURL.appendingPathComponent("Whisper", isDirectory: true)
+        let executableURL = whisperURL.appendingPathComponent("whisper-cli")
+        let modelURL = whisperURL
+            .appendingPathComponent("Models", isDirectory: true)
+            .appendingPathComponent("ggml-base.en.bin")
+        let backendsURL = whisperURL.appendingPathComponent("Backends", isDirectory: true)
+
+        var missing: [String] = []
+        if !FileManager.default.isExecutableFile(atPath: executableURL.path) {
+            missing.append("Whisper/whisper-cli")
+        }
+        if !FileManager.default.fileExists(atPath: modelURL.path) {
+            missing.append("Whisper/Models/ggml-base.en.bin")
+        }
+
+        for name in ["libwhisper.1.dylib", "libggml.0.dylib", "libggml-base.0.dylib"] {
+            if !FileManager.default.fileExists(atPath: whisperURL.appendingPathComponent(name).path) {
+                missing.append("Whisper/\(name)")
+            }
+        }
+
+        if !FileManager.default.fileExists(atPath: backendsURL.appendingPathComponent("libomp.dylib").path) {
+            missing.append("Whisper/Backends/libomp.dylib")
+        }
+        if preferredBundledCPUBackendPath(in: whisperURL) == nil {
+            missing.append("Whisper/Backends/libggml-cpu-apple_*.so")
+        }
+
+        if missing.isEmpty {
+            return WhisperRuntimeStatus(
+                isReady: true,
+                isBundledReady: true,
+                detail: "Bundled ggml-base.en model and whisper.cpp runtime are present.",
+                missing: []
+            )
+        }
+
+        return WhisperRuntimeStatus(
+            isReady: false,
+            isBundledReady: false,
+            detail: "Missing \(missing.joined(separator: ", ")). Reinstall the notarized Syn release.",
+            missing: missing
+        )
+    }
+
     fileprivate static func findBundledWhisperInstallation() -> WhisperInstallation? {
+        guard bundledWhisperRuntimeStatus().isBundledReady else {
+            return nil
+        }
+
         guard let resourceURL = Bundle.main.resourceURL else {
             return nil
         }

@@ -18,6 +18,12 @@ struct SynApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appSettings) {
+                Button("Setup...") {
+                    appState.showSetupWindow()
+                }
+            }
+
             CommandMenu("Capture") {
                 Button("Start with Picker") {
                     appState.openCapturePicker()

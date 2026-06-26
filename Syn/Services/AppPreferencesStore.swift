@@ -17,6 +17,8 @@ struct AppPreferences: Codable {
     var lastDisplayID: UInt32?
     var defaultPromptProfile: AgentPromptProfile?
     var projectContextFolderPath: String?
+    var hasCompletedInitialSetup: Bool?
+    var setupTestSucceededAt: Date?
 }
 
 enum AppPreferencesStore {

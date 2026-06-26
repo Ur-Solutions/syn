@@ -43,6 +43,10 @@ final class AppState: ObservableObject {
     @Published var visibleAnnotationStrokes: [AnnotationStroke] = []
     @Published var videoEditInProgressPacketID: UUID?
     @Published var projectContextFolderPath: String?
+    @Published var hasCompletedInitialSetup = false
+    @Published var setupTestSucceededAt: Date?
+    @Published var setupTestStatus = "Not run"
+    @Published var isSetupTestCaptureRunning = false
 
     private enum HotkeyRecordingTrigger: String {
         case picker
@@ -80,6 +84,7 @@ final class AppState: ObservableObject {
     private var currentCaptureDisplayID: CGDirectDisplayID?
     private var durationWarningTask: Task<Void, Never>?
     private var settingsWindow: NSWindow?
+    private var setupWindow: NSWindow?
     private let hotkeyActionLogURL = AppState.hotkeyActionLogURLFromArguments()
     private let isHotkeyObserverMode = ProcessInfo.processInfo.arguments.contains("--syn-hotkey-observer")
     private let selectorConfirmLogURL = AppState.selectorConfirmLogURLFromArguments()
@@ -96,6 +101,7 @@ final class AppState: ObservableObject {
     private let hotkeyRecordingLogURL = AppState.hotkeyRecordingLogURLFromArguments()
     private let hotkeyRecordingDuration = AppState.hotkeyRecordingDurationFromArguments()
     private var hotkeyRecordingStopTask: Task<Void, Never>?
+    private var setupTestCaptureStopTask: Task<Void, Never>?
 
     var selectedPacket: PacketSummary? {
         recentPackets.first { $0.id == selectedPacketID }
@@ -161,6 +167,11 @@ final class AppState: ObservableObject {
         lastDisplayID = appPreferences.lastDisplayID
         defaultPromptProfile = appPreferences.defaultPromptProfile ?? .generalCoding
         projectContextFolderPath = appPreferences.projectContextFolderPath
+        hasCompletedInitialSetup = appPreferences.hasCompletedInitialSetup == true
+        setupTestSucceededAt = appPreferences.setupTestSucceededAt
+        if let setupTestSucceededAt {
+            setupTestStatus = "Passed \(setupTestSucceededAt.formatted(date: .abbreviated, time: .shortened))."
+        }
         packetProcessor.defaultPromptProfile = defaultPromptProfile
         packetProcessor.projectContextFolderURL = projectContextFolderPath.map { URL(fileURLWithPath: $0) }
         seedRepeatStateIfNeededForHotkeyRecordingFixture()
@@ -312,7 +323,9 @@ final class AppState: ObservableObject {
             } else if ProcessInfo.processInfo.arguments.contains("--syn-show-capture-picker") {
                 showMainWindow()
                 isCapturePickerPresented = true
-            } else if ProcessInfo.processInfo.arguments.contains("--syn-show-main-window") || PermissionService.shouldShowSetupChecklist {
+            } else if ProcessInfo.processInfo.arguments.contains("--syn-show-setup-window") || shouldPresentInitialSetup {
+                showSetupWindow()
+            } else if ProcessInfo.processInfo.arguments.contains("--syn-show-main-window") {
                 showMainWindow()
             }
             if PermissionDiagnostics.shouldRequestMicrophone {
@@ -428,6 +441,38 @@ final class AppState: ObservableObject {
 
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func showSetupWindow() {
+        if setupWindow == nil {
+            let hostingController = NSHostingController(
+                rootView: SetupChecklistView(context: .firstRun)
+                    .environmentObject(self)
+                    .frame(width: 660, height: 780)
+            )
+            let window = NSWindow(contentViewController: hostingController)
+            window.title = "Syn Setup"
+            window.setContentSize(NSSize(width: 680, height: 800))
+            window.styleMask = NSWindow.StyleMask([.titled, .closable, .miniaturizable])
+            window.isReleasedWhenClosed = false
+            window.center()
+            setupWindow = window
+        }
+
+        setupWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func markInitialSetupComplete() {
+        hasCompletedInitialSetup = true
+        savePreferences()
+        statusMessage = "Setup complete."
+        setupWindow?.close()
+    }
+
+    private var shouldPresentInitialSetup: Bool {
+        !hasCompletedInitialSetup
+            || !SetupReadinessSnapshot.current(testCaptureSucceededAt: setupTestSucceededAt).requiredReady
     }
 
     private func showRecordingHUDFixture() {
@@ -766,7 +811,28 @@ final class AppState: ObservableObject {
 
     func stopRecording() {
         Task {
-            await stopAndProcessRecording()
+            if isSetupTestCaptureRunning {
+                await stopSetupTestCaptureRaw()
+            } else {
+                await stopAndProcessRecording()
+            }
+        }
+    }
+
+    func runSetupTestCapture() {
+        guard !isSetupTestCaptureRunning else {
+            return
+        }
+        guard activeRecording == nil else {
+            setupTestStatus = "Stop the active recording before running setup test."
+            statusMessage = setupTestStatus
+            return
+        }
+
+        isSetupTestCaptureRunning = true
+        setupTestStatus = "Starting test capture..."
+        Task {
+            await runSetupTestCaptureAsync()
         }
     }
 
@@ -1531,6 +1597,162 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func runSetupTestCaptureAsync() async {
+        await startRecording(.screen)
+
+        guard activeRecording != nil, currentPacket != nil else {
+            isSetupTestCaptureRunning = false
+            setupTestStatus = lastErrorMessage ?? "Test capture could not start."
+            statusMessage = setupTestStatus
+            return
+        }
+
+        setupTestStatus = "Recording for 5 seconds..."
+        setupTestCaptureStopTask?.cancel()
+        setupTestCaptureStopTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            await self?.stopSetupTestCaptureRaw()
+        }
+    }
+
+    private func stopSetupTestCaptureRaw() async {
+        setupTestCaptureStopTask?.cancel()
+        setupTestCaptureStopTask = nil
+
+        guard let context = currentPacket,
+              var recording = activeRecording else {
+            isSetupTestCaptureRunning = false
+            return
+        }
+
+        var failureDuration = recording.elapsed()
+
+        do {
+            setupTestStatus = "Stopping test capture..."
+            statusMessage = setupTestStatus
+            let stoppedAt = Date()
+            recording.elapsedBeforeCurrentRun = recording.elapsed(at: stoppedAt)
+            recording.currentRunStartedAt = nil
+            recording.pauseStartedAt = nil
+            recording.phase = .processing
+            activeRecording = recording
+            RecordingHUDController.shared.update(appState: self)
+
+            let pointerEvents = pointerRecorder.stop()
+            let annotations = annotationRecorder.stop()
+            resetCanvasState()
+            if isElementPickerEnabled {
+                setElementPicker(false)
+            }
+            stopMicMeter()
+            streamingTranscriber.cancel()
+            let activeWindowSamples = activeWindowTracker.stop()
+            let segments = try await recorder.stop()
+            var capture = recorder.sourceMetadata ?? CaptureSourceMetadata(
+                mode: recording.mode.rawValue,
+                displayID: nil,
+                windowID: nil,
+                appName: nil,
+                windowTitle: nil,
+                sourceRect: nil,
+                outputSize: nil,
+                notes: ["Capture metadata was unavailable."]
+            )
+            capture.notes.append(contentsOf: currentPermissionNotes)
+            capture.notes.append("Setup test capture stopped before AI processing.")
+
+            let duration = try await VideoUtilities.mergeSegments(segments, outputURL: context.rawRecordingURL)
+            failureDuration = duration
+            let rawSession = RawCaptureSession(
+                schemaVersion: 1,
+                packetID: context.id,
+                title: context.title,
+                createdAt: context.createdAt,
+                capture: capture,
+                pauses: pauseIntervals
+            )
+            try JSONEncoder.synEncoder.encode(rawSession).write(to: context.rawCaptureSessionURL)
+            try JSONEncoder.synEncoder.encode(pointerEvents).write(to: context.pointerEventsURL)
+            try JSONEncoder.synEncoder.encode(annotations).write(to: context.annotationEventsURL)
+            if !activeWindowSamples.isEmpty {
+                try JSONEncoder.synEncoder.encode(activeWindowSamples).write(to: context.activeWindowSamplesURL)
+            }
+
+            let summary = """
+            # Syn Setup Test Capture
+
+            Status: Partial
+
+            Syn recorded screen and microphone through the real app bundle identity and stopped after \(String(format: "%.1f", duration)) seconds.
+
+            This setup test intentionally stopped after raw local capture. It did not send screen contents, microphone audio, frames, or transcript text to AI providers.
+            """
+            try summary.write(to: context.summaryURL, atomically: true, encoding: .utf8)
+
+            let prompt = """
+            # Syn Setup Test Capture
+
+            Raw recording:
+            `raw/recording-source.mp4`
+
+            This packet confirms local capture setup only. Retry processing from Syn History only if the captured contents are safe to send to configured AI providers.
+            """
+            try prompt.write(to: context.agentPromptURL, atomically: true, encoding: .utf8)
+
+            let packet = PacketSummary(
+                id: context.id,
+                title: context.title,
+                createdAt: context.createdAt,
+                duration: duration,
+                status: .partial,
+                folderURL: context.folderURL,
+                zipURL: context.zipURL
+            )
+            replacePacket(packet)
+            selectedPacketID = packet.id
+            setupTestSucceededAt = Date()
+            setupTestStatus = "Passed. Raw recording saved."
+            statusMessage = setupTestStatus
+            savePreferences()
+            activeRecording = nil
+            currentPacket = nil
+            currentPermissionNotes = []
+            pauseIntervals = []
+            currentCaptureRegion = nil
+            currentCaptureSelectedWindowID = nil
+            currentCaptureSelectedWindowTarget = nil
+            currentChromeTabTarget = nil
+            currentCaptureDisplayID = nil
+            stopDurationWarningMonitor()
+            RecordingHUDController.shared.hide()
+        } catch {
+            _ = try? await recorder.stop()
+            _ = pointerRecorder.stop()
+            _ = annotationRecorder.stop()
+            _ = activeWindowTracker.stop()
+            stopMicMeter()
+            streamingTranscriber.cancel()
+            updatePacketStatus(id: context.id, status: .failed, duration: failureDuration)
+            setupTestStatus = "Failed: \(error.localizedDescription)"
+            statusMessage = "Setup test failed."
+            lastErrorMessage = error.localizedDescription
+            activeRecording = nil
+            currentPacket = nil
+            currentPermissionNotes = []
+            pauseIntervals = []
+            currentCaptureRegion = nil
+            currentCaptureSelectedWindowID = nil
+            currentCaptureSelectedWindowTarget = nil
+            currentChromeTabTarget = nil
+            currentCaptureDisplayID = nil
+            stopDurationWarningMonitor()
+            RecordingHUDController.shared.hide()
+            resetCanvasState()
+        }
+
+        isSetupTestCaptureRunning = false
+    }
+
     private func stopAndProcessRecording() async {
         guard let context = currentPacket,
               var recording = activeRecording else {
@@ -1789,6 +2011,9 @@ final class AppState: ObservableObject {
         selectorRecordingStopTask = nil
         hotkeyRecordingStopTask?.cancel()
         hotkeyRecordingStopTask = nil
+        setupTestCaptureStopTask?.cancel()
+        setupTestCaptureStopTask = nil
+        isSetupTestCaptureRunning = false
         stopDurationWarningMonitor()
 
         // Tear down HUD and annotation overlay.
@@ -2132,7 +2357,9 @@ final class AppState: ObservableObject {
             lastChromeTabTarget: lastChromeTabTarget,
             lastDisplayID: lastDisplayID,
             defaultPromptProfile: defaultPromptProfile,
-            projectContextFolderPath: projectContextFolderPath
+            projectContextFolderPath: projectContextFolderPath,
+            hasCompletedInitialSetup: hasCompletedInitialSetup,
+            setupTestSucceededAt: setupTestSucceededAt
         )
         savePreferences()
         currentCaptureRegion = nil
@@ -2151,7 +2378,9 @@ final class AppState: ObservableObject {
             lastChromeTabTarget: lastChromeTabTarget,
             lastDisplayID: lastDisplayID,
             defaultPromptProfile: defaultPromptProfile,
-            projectContextFolderPath: projectContextFolderPath
+            projectContextFolderPath: projectContextFolderPath,
+            hasCompletedInitialSetup: hasCompletedInitialSetup,
+            setupTestSucceededAt: setupTestSucceededAt
         )
         AppPreferencesStore.save(appPreferences)
     }

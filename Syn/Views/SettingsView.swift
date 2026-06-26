@@ -1,20 +1,14 @@
-import Security
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
-    @State private var anthropicKey = ""
-    @State private var openAIKey = ""
-    @State private var anthropicKeyStatus = "Not checked"
-    @State private var openAIKeyStatus = "Not checked"
-    @State private var savedMessage: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: SynSpace.s4) {
-                SettingsCard(title: "Permissions") {
-                    PermissionChecklistView()
-                }
+                SetupChecklistView(context: .settings)
+                    .environmentObject(appState)
 
                 SettingsCard(title: "Shortcuts") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -113,49 +107,12 @@ struct SettingsView: View {
                             .foregroundStyle(SynColor.text3)
                     }
                 }
-
-                SettingsCard(title: "AI Providers") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        providerRow("Transcription", value: "Local Whisper")
-                        providerRow("Frame planning", value: "OpenAI")
-                        providerRow("Summary", value: "Claude Opus")
-
-                        Divider().overlay(SynColor.hairline)
-
-                        providerRow("Anthropic key", value: anthropicKeyStatus)
-                        providerRow("OpenAI key", value: openAIKeyStatus)
-
-                        SecureField("Anthropic API key", text: $anthropicKey)
-                            .textFieldStyle(.roundedBorder)
-                        SecureField("OpenAI API key", text: $openAIKey)
-                            .textFieldStyle(.roundedBorder)
-
-                        HStack(spacing: 8) {
-                            Button("Save Keys to Keychain") {
-                                saveKeys()
-                            }
-                            .buttonStyle(.synPrimary(.small))
-
-                            Button("Clear Saved Keys") {
-                                clearKeys()
-                            }
-                            .buttonStyle(.synSecondary(.small))
-                        }
-
-                        if let savedMessage {
-                            Text(savedMessage)
-                                .synFont(.footnote)
-                                .foregroundStyle(SynColor.text2)
-                        }
-                    }
-                }
             }
             .padding(SynSpace.s5)
         }
         .background(SynColor.canvas)
         .onAppear {
             appState.refreshHotkeyStatus()
-            refreshKeyStatus()
         }
     }
 
@@ -177,78 +134,6 @@ struct SettingsView: View {
         }
     }
 
-    private func providerRow(_ label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-                .synFont(.subhead)
-                .foregroundStyle(SynColor.text2)
-                .frame(width: 130, alignment: .leading)
-            Text(value)
-                .synFont(.body)
-                .foregroundStyle(SynColor.text1)
-            Spacer()
-        }
-    }
-
-    private func saveKeys() {
-        let trimmedAnthropicKey = anthropicKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedOpenAIKey = openAIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedAnthropicKey.isEmpty || !trimmedOpenAIKey.isEmpty else {
-            savedMessage = "Enter at least one key to save."
-            return
-        }
-
-        var results: [String] = []
-        if !trimmedAnthropicKey.isEmpty {
-            let status = SecretStore.save(value: trimmedAnthropicKey, account: "anthropic-api-key")
-            results.append(statusMessage(label: "Anthropic", successText: "saved", failureText: "save failed", status: status, emptySuccess: false))
-            if status == errSecSuccess {
-                anthropicKey = ""
-            }
-        }
-
-        if !trimmedOpenAIKey.isEmpty {
-            let status = SecretStore.save(value: trimmedOpenAIKey, account: "openai-api-key")
-            results.append(statusMessage(label: "OpenAI", successText: "saved", failureText: "save failed", status: status, emptySuccess: false))
-            if status == errSecSuccess {
-                openAIKey = ""
-            }
-        }
-
-        savedMessage = results.joined(separator: " ")
-        refreshKeyStatus()
-    }
-
-    private func clearKeys() {
-        let anthropicStatus = SecretStore.delete(account: "anthropic-api-key")
-        let openAIStatus = SecretStore.delete(account: "openai-api-key")
-        anthropicKey = ""
-        openAIKey = ""
-        savedMessage = [
-            statusMessage(label: "Anthropic", successText: "cleared", failureText: "clear failed", status: anthropicStatus, emptySuccess: true),
-            statusMessage(label: "OpenAI", successText: "cleared", failureText: "clear failed", status: openAIStatus, emptySuccess: true)
-        ].joined(separator: " ")
-        refreshKeyStatus()
-    }
-
-    private func refreshKeyStatus() {
-        anthropicKeyStatus = SecretStore.anthropicKeyAvailability().displayText
-        openAIKeyStatus = SecretStore.openAIKeyAvailability().displayText
-    }
-
-    private func statusMessage(
-        label: String,
-        successText: String,
-        failureText: String,
-        status: OSStatus,
-        emptySuccess: Bool
-    ) -> String {
-        if status == errSecSuccess || (emptySuccess && status == errSecItemNotFound) {
-            return "\(label) \(successText)."
-        }
-
-        return "\(label) \(failureText) (\(status))."
-    }
 }
 
 private struct SettingsCard<Content: View>: View {
