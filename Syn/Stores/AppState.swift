@@ -14,13 +14,18 @@ final class AppState: ObservableObject {
     @Published var lastCaptureMode: CaptureMode?
     @Published var selectedPacketID: PacketSummary.ID?
     @Published var recentPackets: [PacketSummary] = []
-    @Published var activeRecording: ActiveRecording?
+    @Published var activeRecording: ActiveRecording? {
+        didSet {
+            GlobalHotkeyService.shared.setRecordingActive(activeRecording != nil)
+        }
+    }
     @Published var statusMessage: String?
     @Published var lastErrorMessage: String?
     @Published var preferredPickerHotkey = "Not configured"
     @Published var preferredRepeatHotkey = "Not configured"
     @Published var pickerHotkeyStatus = "Not checked"
     @Published var repeatHotkeyStatus = "Not checked"
+    @Published var stopRecordingHotkeyStatus = "Not checked"
     @Published var micLevel: Double = 0
     @Published var isMicMeterActive = false
     @Published var recordingDurationWarningMessage: String?
@@ -244,6 +249,13 @@ final class AppState: ObservableObject {
                 self?.toggleElementPicker()
             }
         }
+        GlobalHotkeyService.shared.onStopRecording = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.activeRecording != nil else { return }
+                self.recordHotkeyAction("stop-recording")
+                self.stopRecording()
+            }
+        }
         GlobalHotkeyService.shared.onClearCanvas = { [weak self] in
             Task { @MainActor in
                 self?.clearAnnotations()
@@ -314,6 +326,7 @@ final class AppState: ObservableObject {
         let snapshot = GlobalHotkeyService.shared.registrationSnapshot
         pickerHotkeyStatus = hotkeyStatusText(snapshot.pickerStatus)
         repeatHotkeyStatus = hotkeyStatusText(snapshot.repeatStatus)
+        stopRecordingHotkeyStatus = hotkeyStatusText(snapshot.eventHandlerStatus)
     }
 
     func openCapturePicker() {

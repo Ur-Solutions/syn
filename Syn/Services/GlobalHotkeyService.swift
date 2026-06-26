@@ -23,6 +23,7 @@ final class GlobalHotkeyService {
     static let repeatDescription = "Left Shift + Right Shift"
     static let canvasDescription = "Right Shift + C"
     static let canvasClearDescription = "Right Shift + D, D"
+    static let stopRecordingDescription = "Right Shift + S"
     static let accessibilityRequiredStatus: OSStatus = -25211
     static let eventTapCreationFailedStatus: OSStatus = -25212
     static let eventTapSourceFailedStatus: OSStatus = -25213
@@ -38,6 +39,7 @@ final class GlobalHotkeyService {
     var onCycleAnnotationSelection: (() -> Void)?
     var onNudgeSelectedAnnotation: ((CGFloat, CGFloat) -> Void)?
     var onToggleElementPicker: (() -> Void)?
+    var onStopRecording: (() -> Void)?
 
     private let leftShiftKeyCode = CGKeyCode(56)
     private let rightShiftKeyCode = CGKeyCode(60)
@@ -53,6 +55,7 @@ final class GlobalHotkeyService {
     private let sixKeyCode = CGKeyCode(22)
     private let xKeyCode = CGKeyCode(7)
     private let zKeyCode = CGKeyCode(6)
+    private let sKeyCode = CGKeyCode(1)
     private let eKeyCode = CGKeyCode(14)
     private let tabKeyCode = CGKeyCode(48)
     private let leftArrowKeyCode = CGKeyCode(123)
@@ -67,7 +70,7 @@ final class GlobalHotkeyService {
     private let repeatInputDrainDelay: TimeInterval = 0.35
     private let repeatDeadlineSettleNanoseconds: UInt64 = 150_000_000
     private let canvasClearDoubleTapWindow: TimeInterval = 0.75
-    private let resolutionQueue = DispatchQueue(label: "com.trmd.syn.global-hotkey-resolution")
+    private let resolutionQueue = DispatchQueue(label: "com.trmdy.syn.global-hotkey-resolution")
     private let resolutionQueueKey = DispatchSpecificKey<Void>()
     private let lifecycleLock = NSLock()
     private let snapshotLock = NSLock()
@@ -89,6 +92,7 @@ final class GlobalHotkeyService {
     private var isZDown = false
     private var isTabDown = false
     private var isEDown = false
+    private var isSDown = false
     private var shiftChordArmed = false
     private var shiftChordBeganAtNanoseconds: UInt64?
     private var chordTriggered = false
@@ -104,6 +108,7 @@ final class GlobalHotkeyService {
     private var lastCanvasDKeyDownAtNanoseconds: UInt64?
     private var lastKeyEventUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
     private var storedCanvasModeActive = false
+    private var storedRecordingActive = false
 
     private var storedRegistrationSnapshot = GlobalHotkeyRegistrationSnapshot(
         eventHandlerStatus: nil,
@@ -205,6 +210,12 @@ final class GlobalHotkeyService {
     func setCanvasModeActive(_ active: Bool) {
         canvasModeLock.lock()
         storedCanvasModeActive = active
+        canvasModeLock.unlock()
+    }
+
+    func setRecordingActive(_ active: Bool) {
+        canvasModeLock.lock()
+        storedRecordingActive = active
         canvasModeLock.unlock()
     }
 
@@ -529,6 +540,7 @@ final class GlobalHotkeyService {
         if keyCode == zKeyCode, type == .keyUp { isZDown = false }
         if keyCode == tabKeyCode, type == .keyUp { isTabDown = false }
         if keyCode == eKeyCode, type == .keyUp { isEDown = false }
+        if keyCode == sKeyCode, type == .keyUp { isSDown = false }
 
         let shouldSamplePhysicalR = pendingRepeatWorkItem != nil
             || shiftChordArmed
@@ -548,6 +560,15 @@ final class GlobalHotkeyService {
         isLeftShiftDown = leftShift
         isRightShiftDown = rightShift
         isRDown = resolvedR
+
+        if handleStopRecordingShortcutIfNeeded(
+            keyCode: keyCode,
+            type: type,
+            leftShift: leftShift,
+            rightShift: rightShift
+        ) {
+            return true
+        }
 
         if handleCanvasShortcutIfNeeded(
             keyCode: keyCode,
@@ -624,6 +645,28 @@ final class GlobalHotkeyService {
             }
         }
         return false
+    }
+
+    private func handleStopRecordingShortcutIfNeeded(
+        keyCode: CGKeyCode?,
+        type: CGEventType?,
+        leftShift: Bool,
+        rightShift: Bool
+    ) -> Bool {
+        guard type == .keyDown, keyCode == sKeyCode, rightShift, !leftShift, isRecordingActive else {
+            return false
+        }
+
+        guard !isSDown else {
+            return true
+        }
+        isSDown = true
+        cancelPendingRepeat()
+        resetChordResolutionState()
+        NSLog("Syn global shortcut pressed: \(Self.stopRecordingDescription)")
+        recordDebugEvent("action stop-recording")
+        onStopRecording?()
+        return true
     }
 
     private func handleCanvasShortcutIfNeeded(
@@ -753,6 +796,12 @@ final class GlobalHotkeyService {
         canvasModeLock.lock()
         defer { canvasModeLock.unlock() }
         return storedCanvasModeActive
+    }
+
+    private var isRecordingActive: Bool {
+        canvasModeLock.lock()
+        defer { canvasModeLock.unlock() }
+        return storedRecordingActive
     }
 
     private func triggerCanvasToolShortcut(_ tool: AnnotationTool) {
@@ -947,6 +996,7 @@ final class GlobalHotkeyService {
         isRDown = false
         isCDown = false
         isDDown = false
+        isSDown = false
         lastCanvasDKeyDownAtNanoseconds = nil
         resetChordResolutionState()
     }

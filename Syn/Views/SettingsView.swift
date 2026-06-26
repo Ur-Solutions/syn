@@ -28,6 +28,11 @@ struct SettingsView: View {
                             keys: [("⇧", "L"), ("⇧", "R")],
                             status: appState.repeatHotkeyStatus
                         )
+                        shortcutRow(
+                            label: "Stop recording",
+                            keys: [("⇧", "R"), ("S", nil)],
+                            status: appState.stopRecordingHotkeyStatus
+                        )
                     }
                 }
 

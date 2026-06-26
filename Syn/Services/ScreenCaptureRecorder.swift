@@ -546,12 +546,22 @@ private enum CaptureSourceResolver {
             windowTitle: window.title,
             chromeTab: chromeTab,
             smartRegion: nil,
-            sourceRect: CodableRect(window.frame),
+            sourceRect: CodableRect(appKitGlobalRect(cgGlobalRect: window.frame)),
             outputSize: CodableSize(width: Double(outputWidth), height: Double(outputHeight)),
             notes: notes
         )
 
         return ResolvedCaptureSource(source: .single(filter: filter, configuration: configuration), metadata: metadata)
+    }
+
+    /// SCWindow.frame is in CoreGraphics screen coordinates (top-left origin, Y down), but
+    /// pointer events and annotation strokes are recorded via NSEvent.mouseLocation in AppKit
+    /// global coordinates (bottom-left origin, Y up). Metadata sourceRect must be AppKit-space
+    /// so the overlay mapping in VideoUtilities lands strokes and click bubbles on-canvas.
+    private static func appKitGlobalRect(cgGlobalRect rect: CGRect) -> CGRect {
+        let primaryHeight = (NSScreen.screens.first(where: { $0.frame.origin == .zero })
+            ?? NSScreen.screens.first)?.frame.height ?? 0
+        return CGRect(x: rect.minX, y: primaryHeight - rect.maxY, width: rect.width, height: rect.height)
     }
 
     private static func allScreensSource(content: SCShareableContent) -> ResolvedCaptureSource {

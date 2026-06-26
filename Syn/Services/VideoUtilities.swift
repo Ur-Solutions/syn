@@ -549,6 +549,9 @@ enum VideoUtilities {
         if overlayResult.annotationCount == 0, !annotations.isEmpty {
             notes.append("Annotation strokes were captured, but none could be mapped into the rendered video canvas.")
         }
+        if overlayResult.offCanvasAnnotationCount > 0 {
+            notes.append("\(overlayResult.offCanvasAnnotationCount) annotation stroke(s) mapped outside the rendered video canvas and were not drawn into recording.mp4.")
+        }
 
         return ProcessedVideoResult(
             duration: duration.seconds,
@@ -630,7 +633,7 @@ enum VideoUtilities {
         pointerEvents: [PointerEvent],
         annotations: [AnnotationStroke],
         duration: TimeInterval
-    ) -> (clickCount: Int, annotationCount: Int) {
+    ) -> (clickCount: Int, annotationCount: Int, offCanvasAnnotationCount: Int) {
         let parentLayer = CALayer()
         parentLayer.frame = CGRect(origin: .zero, size: renderSize)
 
@@ -660,6 +663,8 @@ enum VideoUtilities {
         }
 
         var annotationCount = 0
+        var offCanvasAnnotationCount = 0
+        let canvasRect = CGRect(origin: .zero, size: renderSize)
         for annotation in annotations {
             guard annotation.startTimestamp >= 0,
                   annotation.startTimestamp <= duration,
@@ -668,9 +673,27 @@ enum VideoUtilities {
                 continue
             }
 
+            let layerPoints = points.map { CGPoint(x: $0.x, y: Double(renderSize.height) - $0.y) }
+            // Strokes whose mapped coordinates fall entirely outside the canvas would
+            // export an empty overlay while still being reported as rendered; skip them
+            // and surface the count to the processing notes instead.
+            let xs = layerPoints.map(\.x)
+            let ys = layerPoints.map(\.y)
+            let inflate = max(CGFloat(annotation.lineWidth), 8)
+            let strokeBounds = CGRect(
+                x: xs.min() ?? 0,
+                y: ys.min() ?? 0,
+                width: (xs.max() ?? 0) - (xs.min() ?? 0),
+                height: (ys.max() ?? 0) - (ys.min() ?? 0)
+            ).insetBy(dx: -inflate, dy: -inflate)
+            guard strokeBounds.intersects(canvasRect) else {
+                offCanvasAnnotationCount += 1
+                continue
+            }
+
             addAnnotation(
                 annotation,
-                points: points.map { CGPoint(x: $0.x, y: Double(renderSize.height) - $0.y) },
+                points: layerPoints,
                 to: overlayLayer,
                 renderDuration: duration
             )
@@ -681,13 +704,13 @@ enum VideoUtilities {
         // the entire export to be composited frame-by-frame through Core Animation (the
         // slowest AVFoundation export path), so crop-only renders skip it.
         guard clickCount > 0 || annotationCount > 0 else {
-            return (0, 0)
+            return (0, 0, offCanvasAnnotationCount)
         }
         videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
             postProcessingAsVideoLayer: videoLayer,
             in: parentLayer
         )
-        return (clickCount, annotationCount)
+        return (clickCount, annotationCount, offCanvasAnnotationCount)
     }
 
     private static func addClickBubble(to layer: CALayer, center: CGPoint, timestamp: TimeInterval) {

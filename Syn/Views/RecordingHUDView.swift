@@ -95,7 +95,7 @@ struct RecordingHUDView: View {
                     disabled: isProcessing
                 ) { handleDiscard() }
 
-                hudButton(system: "stop.fill", help: "Stop", kind: .stop, disabled: isProcessing) {
+                hudButton(system: "stop.fill", help: "Stop (Right Shift + S)", kind: .stop, disabled: isProcessing) {
                     appState.stopRecording()
                 }
             }
