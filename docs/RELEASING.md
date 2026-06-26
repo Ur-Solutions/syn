@@ -11,7 +11,8 @@ permissions.
 
 - `Developer ID Application: Ur Solutions AS (4QK8JBAU4V)` in the login keychain.
 - Xcode command-line tools on `PATH`.
-- `hem` with `project/syn/app-specific-password`, or
+- `hem` with `project/syn/app-specific-password` or the shared Flyt fallback
+  `project/flyt/app-specific-password`, or
   `APPLE_APP_SPECIFIC_PASSWORD` already exported.
 - Current Apple Developer agreements accepted.
 
@@ -43,7 +44,8 @@ release/SHA256SUMS
 
 - `APPLE_ID`, `APPLE_TEAM_ID`: Apple account/team for notarization.
 - `APPLE_APP_SPECIFIC_PASSWORD`: skip Hem and use this password directly.
-- `SYN_HEM_APP_PASSWORD_PATH`: default `project/syn/app-specific-password`.
+- `SYN_HEM_APP_PASSWORD_PATH`: override Hem lookup. By default the script tries
+  `project/syn/app-specific-password`, then `project/flyt/app-specific-password`.
 - `SYN_DEVELOPER_ID_CODE_SIGN_IDENTITY`: explicit Developer ID identity name.
 - `SYN_DEVELOPER_ID_CERT_SHA1`: explicit Developer ID certificate SHA-1.
 - `SYN_BUILD_NUMBER`: override `CURRENT_PROJECT_VERSION`.

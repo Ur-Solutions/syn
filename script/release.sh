@@ -8,7 +8,10 @@ SCHEME="Syn"
 CONFIGURATION="Release"
 APPLE_ID="${APPLE_ID:-tormod.haugland@gmail.com}"
 APPLE_TEAM_ID="${APPLE_TEAM_ID:-4QK8JBAU4V}"
-HEM_APP_PASSWORD_PATH="${SYN_HEM_APP_PASSWORD_PATH:-project/syn/app-specific-password}"
+DEFAULT_HEM_APP_PASSWORD_PATHS=(
+  "project/syn/app-specific-password"
+  "project/flyt/app-specific-password"
+)
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RELEASE_DIR="$ROOT_DIR/release"
@@ -75,8 +78,25 @@ configure_notary_auth() {
 
   if [[ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
     require_tool hem
-    echo "fetching notarization password from Hem: $HEM_APP_PASSWORD_PATH"
-    APPLE_APP_SPECIFIC_PASSWORD="$(hem get "$HEM_APP_PASSWORD_PATH" password --reason "syn release v${VERSION}")"
+    local hem_paths=("${DEFAULT_HEM_APP_PASSWORD_PATHS[@]}")
+    if [[ -n "${SYN_HEM_APP_PASSWORD_PATH:-}" ]]; then
+      hem_paths=("$SYN_HEM_APP_PASSWORD_PATH")
+    fi
+
+    local path
+    for path in "${hem_paths[@]}"; do
+      echo "fetching notarization password from Hem: $path"
+      if APPLE_APP_SPECIFIC_PASSWORD="$(hem get "$path" password --reason "syn release v${VERSION}" 2>/tmp/syn-hem-error.log)"; then
+        break
+      fi
+      /bin/cat /tmp/syn-hem-error.log >&2 || true
+      APPLE_APP_SPECIFIC_PASSWORD=""
+    done
+
+    if [[ -z "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
+      echo "could not fetch notarization password from Hem." >&2
+      exit 1
+    fi
   fi
 
   if ! printf '%s' "$APPLE_APP_SPECIFIC_PASSWORD" | grep -qE '^[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}$'; then
