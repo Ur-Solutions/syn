@@ -157,6 +157,14 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        NotificationCenter.default.publisher(for: .synOpenRequested)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.showLaunchWindow()
+                }
+            }
+            .store(in: &cancellables)
+
         recentPackets = PacketHistoryRecovery.recover(PacketHistoryStore.load())
         selectedPacketID = recentPackets.first?.id
         lastCaptureMode = appPreferences.lastCaptureMode
@@ -327,6 +335,8 @@ final class AppState: ObservableObject {
                 showSetupWindow()
             } else if ProcessInfo.processInfo.arguments.contains("--syn-show-main-window") {
                 showMainWindow()
+            } else {
+                showLaunchWindow()
             }
             if PermissionDiagnostics.shouldRequestMicrophone {
                 _ = await MicrophonePermissionProbe.requestAccessAndVerifyInput()
@@ -383,6 +393,14 @@ final class AppState: ObservableObject {
 
     func showMainWindow() {
         MainWindowController.shared.show(appState: self)
+    }
+
+    func showLaunchWindow() {
+        if shouldPresentInitialSetup {
+            showSetupWindow()
+        } else {
+            showMainWindow()
+        }
     }
 
     /// Signal packet completion in-app instead of opening the packet folder: a happy chime, a

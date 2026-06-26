@@ -1058,7 +1058,7 @@ final class PacketProcessor {
         let usesActiveWindowTimeline = capture.mode == CaptureMode.activeWindowFollow.rawValue && hasActiveWindowSamples
         return PacketManifest(
             schemaVersion: 1,
-            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0",
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.1",
             createdAt: context.createdAt,
             duration: duration,
             capture: capture,

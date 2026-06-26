@@ -33,6 +33,9 @@ struct WhisperRuntimeStatus: Equatable {
 }
 
 final class TranscriptionService {
+    private static let bundledRuntimeStatusLock = NSLock()
+    private static var cachedBundledRuntimeStatus: WhisperRuntimeStatus?
+
     func transcribe(videoURL: URL, context: PacketContext) async throws -> TranscriptResult {
         try await extractAudio(from: videoURL, to: context.rawAudioURL)
 
@@ -190,6 +193,23 @@ final class TranscriptionService {
     }
 
     private static func bundledWhisperRuntimeStatus() -> WhisperRuntimeStatus {
+        bundledRuntimeStatusLock.lock()
+        if let cached = cachedBundledRuntimeStatus {
+            bundledRuntimeStatusLock.unlock()
+            return cached
+        }
+        bundledRuntimeStatusLock.unlock()
+
+        let status = computeBundledWhisperRuntimeStatus()
+
+        bundledRuntimeStatusLock.lock()
+        cachedBundledRuntimeStatus = status
+        bundledRuntimeStatusLock.unlock()
+
+        return status
+    }
+
+    private static func computeBundledWhisperRuntimeStatus() -> WhisperRuntimeStatus {
         guard let resourceURL = Bundle.main.resourceURL else {
             return WhisperRuntimeStatus(
                 isReady: false,
@@ -223,16 +243,16 @@ final class TranscriptionService {
         if !FileManager.default.fileExists(atPath: backendsURL.appendingPathComponent("libomp.dylib").path) {
             missing.append("Whisper/Backends/libomp.dylib")
         }
-        if preferredBundledCPUBackendPath(in: whisperURL) == nil {
+        let backendPath = preferredBundledCPUBackendPath(in: whisperURL)
+        if backendPath == nil {
             missing.append("Whisper/Backends/libggml-cpu-apple_*.so")
         }
 
         if missing.isEmpty {
-            return WhisperRuntimeStatus(
-                isReady: true,
-                isBundledReady: true,
-                detail: "Bundled ggml-base.en model and whisper.cpp runtime are present.",
-                missing: []
+            return validateBundledWhisperRuntime(
+                executableURL: executableURL,
+                whisperURL: whisperURL,
+                backendPath: backendPath
             )
         }
 
@@ -242,6 +262,57 @@ final class TranscriptionService {
             detail: "Missing \(missing.joined(separator: ", ")). Reinstall the notarized Syn release.",
             missing: missing
         )
+    }
+
+    private static func validateBundledWhisperRuntime(
+        executableURL: URL,
+        whisperURL: URL,
+        backendPath: String?
+    ) -> WhisperRuntimeStatus {
+        do {
+            let result = try run(
+                executable: executableURL.path,
+                arguments: ["-h"],
+                workingDirectory: whisperURL,
+                environment: bundledWhisperEnvironment(whisperURL: whisperURL, backendPath: backendPath)
+            )
+
+            guard result.status == 0, !result.output.localizedCaseInsensitiveContains("failed to load") else {
+                return WhisperRuntimeStatus(
+                    isReady: false,
+                    isBundledReady: false,
+                    detail: "Bundled Whisper runtime could not launch: \(compactProcessOutput(result.output))",
+                    missing: ["Whisper launch check"]
+                )
+            }
+
+            return WhisperRuntimeStatus(
+                isReady: true,
+                isBundledReady: true,
+                detail: "Bundled ggml-base.en model and whisper.cpp runtime are present and launchable.",
+                missing: []
+            )
+        } catch {
+            return WhisperRuntimeStatus(
+                isReady: false,
+                isBundledReady: false,
+                detail: "Bundled Whisper runtime could not launch: \(error.localizedDescription)",
+                missing: ["Whisper launch check"]
+            )
+        }
+    }
+
+    private static func compactProcessOutput(_ output: String) -> String {
+        let compact = output
+            .split(whereSeparator: \.isNewline)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !compact.isEmpty else {
+            return "no output"
+        }
+
+        return String(compact.prefix(300))
     }
 
     fileprivate static func findBundledWhisperInstallation() -> WhisperInstallation? {
@@ -264,24 +335,27 @@ final class TranscriptionService {
             return nil
         }
 
+        return WhisperInstallation(
+            executablePath: executableURL.path,
+            modelPath: modelURL.path,
+            provider: "local-whisper.cpp-bundled",
+            workingDirectory: whisperURL,
+            environment: bundledWhisperEnvironment(whisperURL: whisperURL),
+            notes: []
+        )
+    }
+
+    private static func bundledWhisperEnvironment(whisperURL: URL, backendPath explicitBackendPath: String? = nil) -> [String: String] {
         var environment = [
             "DYLD_LIBRARY_PATH": [
                 whisperURL.path,
                 whisperURL.appendingPathComponent("Backends", isDirectory: true).path
             ].joined(separator: ":")
         ]
-        if let backendPath = preferredBundledCPUBackendPath(in: whisperURL) {
+        if let backendPath = explicitBackendPath ?? preferredBundledCPUBackendPath(in: whisperURL) {
             environment["GGML_BACKEND_PATH"] = backendPath
         }
-
-        return WhisperInstallation(
-            executablePath: executableURL.path,
-            modelPath: modelURL.path,
-            provider: "local-whisper.cpp-bundled",
-            workingDirectory: whisperURL,
-            environment: environment,
-            notes: []
-        )
+        return environment
     }
 
     static func preferredBundledCPUBackendPath(in whisperURL: URL) -> String? {
@@ -298,8 +372,9 @@ final class TranscriptionService {
 
         let backendsURL = whisperURL.appendingPathComponent("Backends", isDirectory: true)
         for name in orderedNames {
-            if FileManager.default.fileExists(atPath: backendsURL.appendingPathComponent(name).path) {
-                return "./Backends/\(name)"
+            let backendURL = backendsURL.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: backendURL.path) {
+                return backendURL.path
             }
         }
         return nil

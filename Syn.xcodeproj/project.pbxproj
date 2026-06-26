@@ -540,7 +540,7 @@
 				CODE_SIGN_ENTITLEMENTS = Syn/Syn.entitlements;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Syn;
@@ -549,7 +549,7 @@
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Syn reads and activates Google Chrome tabs when you choose Chrome Tab capture.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Syn records your microphone narration while creating feedback packets.";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.trmdy.syn;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -564,7 +564,7 @@
 				CODE_SIGN_ENTITLEMENTS = Syn/Syn.entitlements;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Syn;
@@ -573,7 +573,7 @@
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Syn reads and activates Google Chrome tabs when you choose Chrome Tab capture.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Syn records your microphone narration while creating feedback packets.";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.trmdy.syn;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
